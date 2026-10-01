@@ -1,8 +1,15 @@
 {
   "version": 2,
-  "dgSpecHash": "dlzLaL/hmyw=",
+  "dgSpecHash": "klfgb8ImXzU=",
   "success": true,
   "projectFilePath": "F:\\Projects\\LaravelGuardian\\src\\LaravelGuardian.Services\\LaravelGuardian.Services.csproj",
-  "expectedPackageFiles": [],
+  "expectedPackageFiles": [
+    "C:\\Users\\Jam\\.nuget\\packages\\microsoft.data.sqlite\\10.0.12\\microsoft.data.sqlite.10.0.12.nupkg.sha512",
+    "C:\\Users\\Jam\\.nuget\\packages\\microsoft.data.sqlite.core\\10.0.12\\microsoft.data.sqlite.core.10.0.12.nupkg.sha512",
+    "C:\\Users\\Jam\\.nuget\\packages\\sqlitepclraw.bundle_e_sqlite3\\2.1.12\\sqlitepclraw.bundle_e_sqlite3.2.1.12.nupkg.sha512",
+    "C:\\Users\\Jam\\.nuget\\packages\\sqlitepclraw.core\\2.1.12\\sqlitepclraw.core.2.1.12.nupkg.sha512",
+    "C:\\Users\\Jam\\.nuget\\packages\\sqlitepclraw.lib.e_sqlite3\\2.1.12\\sqlitepclraw.lib.e_sqlite3.2.1.12.nupkg.sha512",
+    "C:\\Users\\Jam\\.nuget\\packages\\sqlitepclraw.provider.e_sqlite3\\2.1.12\\sqlitepclraw.provider.e_sqlite3.2.1.12.nupkg.sha512"
+  ],
   "logs": []
 }

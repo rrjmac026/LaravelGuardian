@@ -47,6 +47,7 @@
                 <Button Content="Run Tests" Command="{Binding RunTestsCommand}" Padding="16,8"/>
                 <Button Content="Discover Routes" Command="{Binding DiscoverRoutesCommand}" Padding="16,8" Margin="8,0,0,0"/>
                 <Button Content="Cancel" Command="{Binding CancelRunCommand}" Padding="16,8" Margin="8,0,0,0"/>
+                <Button Content="Results" Command="{Binding OpenResultsCommand}" Margin="6,0,0,0" Padding="8,3"/>
                 <CheckBox Content="Allow tests on the project's database (unsafe)"
                         IsChecked="{Binding AllowSharedDatabase}"
                         VerticalAlignment="Center" Margin="16,0,0,0" Foreground="#F9E2AF"/>

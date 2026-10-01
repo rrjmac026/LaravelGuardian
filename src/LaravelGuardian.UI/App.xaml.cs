@@ -59,6 +59,11 @@ public partial class App : Application
                 s.AddSingleton<INativeTestRunner, NativeTestRunner>();
                 s.AddSingleton<IRouteScanner, RouteScanner>();
                 s.AddSingleton<IHttpCheckRunner, HttpCheckRunner>();
+                s.AddSingleton<IRunStore, RunStore>();
+                s.AddSingleton<IRunSession, RunSession>();
+                s.AddSingleton<IReportExporter, ReportExporter>();
+                s.AddSingleton<ResultsViewModel>();
+                s.AddTransient<ResultsWindow>();
             })
             .Build();
 

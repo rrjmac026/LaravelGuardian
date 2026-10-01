@@ -4,6 +4,7 @@ using CommunityToolkit.Mvvm.Input;
 using LaravelGuardian.Core.Interfaces;
 using LaravelGuardian.Core.Models;
 using Microsoft.Win32;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace LaravelGuardian.UI.ViewModels;
 
@@ -16,12 +17,17 @@ public partial class MainViewModel : ObservableObject
     private readonly IRouteScanner _routes;
     private readonly IHttpCheckRunner _http;
     private CancellationTokenSource? _runCts;
+    private readonly IRunSession _session;
+    private readonly IServiceProvider _services;
+    private ResultsWindow? _resultsWindow;
 
     public MainViewModel(
         IProjectScanner scanner, IToolDetector tools, IEnvironmentManager env,
         IProcessManager processes, INativeTestRunner tests, IRouteScanner routes,
-        IHttpCheckRunner http)
+        IHttpCheckRunner http, IRunSession session, IServiceProvider services)
     {
+        _session = session;
+        _services = services;
         _scanner = scanner;
         _tools = tools;
         _env = env;
@@ -151,6 +157,8 @@ public partial class MainViewModel : ObservableObject
 
             BaseUrl = _env.BaseUrl ?? "";
             IsEnvironmentRunning = _env.IsRunning;
+
+            await SaveAsync("environment", results);
         }
         catch (Exception ex)
         {
@@ -190,6 +198,7 @@ public partial class MainViewModel : ObservableObject
         {
             Log("Running native tests (php artisan test)...");
             var results = await _tests.RunAsync(project, AllowSharedDatabase, ct);
+            await SaveAsync("tests", results);
             LogTestSummary(results);
         });
     }
@@ -211,6 +220,7 @@ public partial class MainViewModel : ObservableObject
     {
         var scan = await _routes.ScanAsync(project, ct);
         Log($"{scan.Result.Status.ToString().ToUpper(),-8} {scan.Result.Name}: {scan.Result.Message}");
+        await SaveAsync("routes", new[] { scan.Result });
 
         if (scan.Result.Status != TestStatus.Pass)
         {
@@ -261,6 +271,7 @@ public partial class MainViewModel : ObservableObject
             }, ct);
 
             LastHttpResults = results.ToList();
+            await SaveAsync("http", LastHttpResults);
             LogHttpSummary(results);
         });
     }
@@ -364,5 +375,31 @@ public partial class MainViewModel : ObservableObject
         var dispatcher = System.Windows.Application.Current?.Dispatcher;
         if (dispatcher is null || dispatcher.CheckAccess()) action();
         else dispatcher.BeginInvoke(action);
+    }
+    private async Task SaveAsync(string source, IEnumerable<TestResult> results)
+    {
+        try
+        {
+            await _session.RecordAsync(source, ProjectPath, results.ToList());
+        }
+        catch (Exception ex)
+        {
+            Log($"Could not save {source} results: {ex.Message}");
+            Serilog.Log.Error(ex, "Saving {Source} results failed", source);
+        }
+    }
+
+    [RelayCommand]
+    private void OpenResults()
+    {
+        if (_resultsWindow is { IsLoaded: true })
+        {
+            _resultsWindow.Activate();
+            _ = ((ViewModels.ResultsViewModel)_resultsWindow.DataContext).RefreshCommand.ExecuteAsync(null);
+            return;
+        }
+        _resultsWindow = _services.GetRequiredService<ResultsWindow>();
+        _resultsWindow.Closed += (_, _) => _resultsWindow = null;
+        _resultsWindow.Show();
     }
 }
