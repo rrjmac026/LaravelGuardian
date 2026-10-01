@@ -13,3 +13,4 @@ F:\Projects\LaravelGuardian\src\LaravelGuardian.Services\obj\Debug\net10.0\Larav
 F:\Projects\LaravelGuardian\src\LaravelGuardian.Services\obj\Debug\net10.0\refint\LaravelGuardian.Services.dll
 F:\Projects\LaravelGuardian\src\LaravelGuardian.Services\obj\Debug\net10.0\LaravelGuardian.Services.pdb
 F:\Projects\LaravelGuardian\src\LaravelGuardian.Services\obj\Debug\net10.0\ref\LaravelGuardian.Services.dll
+F:\Projects\LaravelGuardian\src\LaravelGuardian.Services\obj\Debug\net10.0\LaravelGuardian.Services.sourcelink.json

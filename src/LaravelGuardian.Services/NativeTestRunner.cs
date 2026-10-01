@@ -97,24 +97,7 @@ public class NativeTestRunner : INativeTestRunner
                 r.Severity = Severity.High;
                 r.ExceptionType = (string?)problem.Attribute("type");
                 var text = problem.Value.Trim();
-                var problem = tc.Element("failure") ?? tc.Element("error");
-                if (problem is not null)
-                {
-                    r.Status = TestStatus.Fail;
-                    r.Severity = Severity.High;
-                    r.ExceptionType = (string?)problem.Attribute("type");
-                    var text = problem.Value.Trim();
-
-                    var msg = text
-                        .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                        .Select(l => l.Trim())
-                        .FirstOrDefault(l => l.Length > 0) ?? "";
-                    if (msg.StartsWith(name, StringComparison.Ordinal)) msg = msg[name.Length..].TrimStart();
-                    if (msg.Length > 200) msg = msg[..200] + "...";
-                    r.Message = msg;
-
-                    r.ExceptionMessage = text.Length > 4000 ? text[..4000] : text;
-                }
+                r.Message = text.Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.Trim();
                 r.ExceptionMessage = text.Length > 4000 ? text[..4000] : text;
             }
             else if (tc.Element("warning") is { } warning)
