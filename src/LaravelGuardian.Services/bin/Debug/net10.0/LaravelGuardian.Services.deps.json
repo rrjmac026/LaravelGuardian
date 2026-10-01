@@ -1,0 +1,39 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v10.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v10.0": {
+      "LaravelGuardian.Services/1.0.0": {
+        "dependencies": {
+          "LaravelGuardian.Core": "1.0.0"
+        },
+        "runtime": {
+          "LaravelGuardian.Services.dll": {}
+        }
+      },
+      "LaravelGuardian.Core/1.0.0": {
+        "runtime": {
+          "LaravelGuardian.Core.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "LaravelGuardian.Services/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "LaravelGuardian.Core/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

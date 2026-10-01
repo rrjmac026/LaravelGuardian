@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/LaravelGuardian.Core/LaravelGuardian.Core.csproj" />
+    <Project Path="src/LaravelGuardian.Services/LaravelGuardian.Services.csproj" />
+    <Project Path="src/LaravelGuardian.UI/LaravelGuardian.UI.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/LaravelGuardian.Tests/LaravelGuardian.Tests.csproj" />
+  </Folder>
+</Solution>

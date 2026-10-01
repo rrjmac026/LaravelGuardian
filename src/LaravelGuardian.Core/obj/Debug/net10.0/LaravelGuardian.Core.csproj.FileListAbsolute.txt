@@ -1,0 +1,11 @@
+F:\Projects\LaravelGuardian\src\LaravelGuardian.Core\bin\Debug\net10.0\LaravelGuardian.Core.deps.json
+F:\Projects\LaravelGuardian\src\LaravelGuardian.Core\bin\Debug\net10.0\LaravelGuardian.Core.dll
+F:\Projects\LaravelGuardian\src\LaravelGuardian.Core\bin\Debug\net10.0\LaravelGuardian.Core.pdb
+F:\Projects\LaravelGuardian\src\LaravelGuardian.Core\obj\Debug\net10.0\LaravelGuardian.Core.GeneratedMSBuildEditorConfig.editorconfig
+F:\Projects\LaravelGuardian\src\LaravelGuardian.Core\obj\Debug\net10.0\LaravelGuardian.Core.AssemblyInfoInputs.cache
+F:\Projects\LaravelGuardian\src\LaravelGuardian.Core\obj\Debug\net10.0\LaravelGuardian.Core.AssemblyInfo.cs
+F:\Projects\LaravelGuardian\src\LaravelGuardian.Core\obj\Debug\net10.0\LaravelGuardian.Core.csproj.CoreCompileInputs.cache
+F:\Projects\LaravelGuardian\src\LaravelGuardian.Core\obj\Debug\net10.0\LaravelGuardian.Core.dll
+F:\Projects\LaravelGuardian\src\LaravelGuardian.Core\obj\Debug\net10.0\refint\LaravelGuardian.Core.dll
+F:\Projects\LaravelGuardian\src\LaravelGuardian.Core\obj\Debug\net10.0\LaravelGuardian.Core.pdb
+F:\Projects\LaravelGuardian\src\LaravelGuardian.Core\obj\Debug\net10.0\ref\LaravelGuardian.Core.dll
