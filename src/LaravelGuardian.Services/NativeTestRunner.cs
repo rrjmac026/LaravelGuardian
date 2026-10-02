@@ -97,7 +97,20 @@ public class NativeTestRunner : INativeTestRunner
                 r.Severity = Severity.High;
                 r.ExceptionType = (string?)problem.Attribute("type");
                 var text = problem.Value.Trim();
-                r.Message = text.Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.Trim();
+
+                // Pest repeats the test name at the start of the failure text.
+                // Strip it from each line and use the first line that still has content.
+                var msg = "";
+                foreach (var raw in text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var line = raw.Trim();
+                    if (name.Length > 0 && line.StartsWith(name, StringComparison.Ordinal))
+                        line = line[name.Length..].Trim();
+                    if (line.Length > 0) { msg = line; break; }
+                }
+                if (msg.Length > 200) msg = msg[..200] + "...";
+                r.Message = msg;
+
                 r.ExceptionMessage = text.Length > 4000 ? text[..4000] : text;
             }
             else if (tc.Element("warning") is { } warning)

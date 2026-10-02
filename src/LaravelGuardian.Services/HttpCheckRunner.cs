@@ -12,6 +12,8 @@ public class HttpCheckRunner : IHttpCheckRunner
 {
     private const int MaxRedirects = 5;
     private const int MaxBodyBytes = 1_000_000;
+    private const int MaxTextChars = 200_000;
+    private const int RepeatedErrorLimit = 3;
 
     private static readonly HashSet<string> DangerousTokens = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -28,10 +30,18 @@ public class HttpCheckRunner : IHttpCheckRunner
         @"\b(?:[A-Z][A-Za-z0-9_]*\\)+[A-Z][A-Za-z0-9_]*(?:Exception|Error)\b", RegexOptions.Compiled);
     private static readonly Regex Scripts = new(
         @"<(script|style)\b[^>]*>.*?</\1>", RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.IgnoreCase);
-    private static readonly Regex Tags = new(@"<[^>]+>", RegexOptions.Compiled);
+    private static readonly Regex Comments = new(
+        @"<!--.*?-->", RegexOptions.Compiled | RegexOptions.Singleline);
+    // Quote-aware: a '>' inside "..." or '...' (e.g. x-data="() => x") does not end the tag.
+    private static readonly Regex Tags = new(
+        @"<(?:[^>""']|""[^""]*""|'[^']*')*>", RegexOptions.Compiled);
     private static readonly Regex Spaces = new(@"\s+", RegexOptions.Compiled);
     private static readonly Regex Title = new(
         @"<title[^>]*>(.*?)</title>", RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.IgnoreCase);
+    private static readonly Regex SqlState = new(
+        @"SQLSTATE\[[^\]]+\][^(]{0,200}", RegexOptions.Compiled);
+    private static readonly Regex AfterClass = new(
+        @"^\s*(?:\S+\.php\s*:?\s*\d+\s*)?(.{1,200})", RegexOptions.Compiled);
     private static readonly Regex Secrets = new(
         @"(?i)((?:_token|csrf-token|password|secret|api[_-]?key|authorization|cookie)[""']?\s*(?:[:=]|content=|value=)\s*[""'])[^""']+",
         RegexOptions.Compiled);
@@ -58,6 +68,10 @@ public class HttpCheckRunner : IHttpCheckRunner
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         int tested = 0;
 
+        string? lastSignature = null;
+        int repeat = 0;
+        string? abortReason = null;
+
         foreach (var route in routes)
         {
             ct.ThrowIfCancellationRequested();
@@ -78,12 +92,36 @@ public class HttpCheckRunner : IHttpCheckRunner
                 continue;
             }
 
+            if (abortReason is not null)
+            {
+                var b = NotRun(route, abortReason);
+                results.Add(b);
+                onResult?.Invoke(b);
+                continue;
+            }
+
             tested++;
             var result = await CheckAsync(http, baseUri, route, options, ct);
             results.Add(result);
             onResult?.Invoke(result);
 
             if (result.Status == TestStatus.Blocked) break; // server unreachable, no point continuing
+
+            // Same server error several times in a row = one environment problem, not many bugs.
+            var signature = ErrorSignature(result);
+            if (signature is not null && signature == lastSignature) repeat++;
+            else { lastSignature = signature; repeat = signature is null ? 0 : 1; }
+
+            if (repeat >= RepeatedErrorLimit)
+            {
+                var what = result.ExceptionType ?? "server error";
+                if (!string.IsNullOrWhiteSpace(result.ExceptionMessage))
+                    what += " - " + Shorten(result.ExceptionMessage!, 120);
+                abortReason = $"Not run: {repeat} routes in a row failed with the same error ({what}). " +
+                              "Likely an environment problem (database, config), not separate bugs. " +
+                              "Fix it and run again.";
+            }
+
             if (options.DelayMs > 0) await Task.Delay(options.DelayMs, ct);
         }
 
@@ -219,7 +257,11 @@ public class HttpCheckRunner : IHttpCheckRunner
                     var (type, message) = DetectException(body, contentType);
                     result.ExceptionType = type;
                     result.ExceptionMessage = message;
+
                     var detail = type is not null ? $": {type}" : "";
+                    if (!string.IsNullOrWhiteSpace(message))
+                        detail += (type is not null ? " - " : ": ") + Shorten(message, 160);
+
                     return Done(TestStatus.Fail, Severity.High, "server-error",
                         $"{prefix}HTTP {status}{detail}");
                 }
@@ -290,6 +332,29 @@ public class HttpCheckRunner : IHttpCheckRunner
         return r;
     }
 
+    private static TestResult NotRun(RouteInfo route, string reason)
+    {
+        var path = route.Uri == "/" ? "/" : "/" + route.Uri.TrimStart('/');
+        var r = new TestResult
+        {
+            Category = route.IsApi ? "API" : "Routes",
+            Name = $"GET {path}",
+            Status = TestStatus.Blocked,
+            Severity = Severity.Info,
+            Message = reason
+        };
+        r.Metadata["classification"] = "aborted";
+        return r;
+    }
+
+    /// Identifies "the same server error" across routes; null when there is no usable detail.
+    private static string? ErrorSignature(TestResult r)
+    {
+        if (r.Metadata.GetValueOrDefault("classification") != "server-error") return null;
+        if (string.IsNullOrWhiteSpace(r.ExceptionType) && string.IsNullOrWhiteSpace(r.ExceptionMessage)) return null;
+        return $"{r.ExceptionType}|{r.ExceptionMessage}";
+    }
+
     // ---------- helpers ----------
 
     private static bool SameOrigin(Uri a, Uri b) =>
@@ -323,6 +388,23 @@ public class HttpCheckRunner : IHttpCheckRunner
         return (Encoding.UTF8.GetString(buffer, 0, Math.Min(total, MaxBodyBytes)), truncated);
     }
 
+    private static string Shorten(string text, int max)
+    {
+        text = Spaces.Replace(text, " ").Trim();
+        return text.Length > max ? text[..max] + "..." : text;
+    }
+
+    /// HTML -> readable text: drops comments, scripts, styles and tags (quote-aware), decodes entities.
+    private static string ToPlainText(string html)
+    {
+        if (html.Length > MaxTextChars) html = html[..MaxTextChars];
+        html = Comments.Replace(html, " ");
+        html = Scripts.Replace(html, " ");
+        html = Tags.Replace(html, " ");
+        html = WebUtility.HtmlDecode(html);
+        return Spaces.Replace(html, " ").Trim();
+    }
+
     private static (string? Type, string? Message) DetectException(string body, string contentType)
     {
         if (contentType.Contains("json", StringComparison.OrdinalIgnoreCase))
@@ -343,9 +425,25 @@ public class HttpCheckRunner : IHttpCheckRunner
             catch (JsonException) { }
         }
 
-        // Best-effort: the first exception-looking class name in a debug error page
-        var m = ExceptionClass.Match(body.Length > 50_000 ? body[..50_000] : body);
-        return (m.Success ? m.Value : null, null);
+        // Best-effort on a debug error page: first exception-looking class, plus its message.
+        var plain = ToPlainText(body);
+        var m = ExceptionClass.Match(plain);
+        string? exType = m.Success ? m.Value : null;
+        string? exMessage = null;
+
+        var sql = SqlState.Match(plain);
+        if (sql.Success)
+        {
+            exMessage = sql.Value.Trim();
+        }
+        else if (m.Success)
+        {
+            var rest = plain[(m.Index + m.Length)..];
+            var after = AfterClass.Match(rest);
+            if (after.Success) exMessage = after.Groups[1].Value.Trim();
+        }
+
+        return (exType, string.IsNullOrWhiteSpace(exMessage) ? null : exMessage);
     }
 
     private static string FormatHeaders(HttpResponseMessage r) =>
@@ -359,8 +457,8 @@ public class HttpCheckRunner : IHttpCheckRunner
         if (contentType.Contains("html", StringComparison.OrdinalIgnoreCase))
         {
             var title = Title.Match(body);
-            var stripped = Spaces.Replace(Tags.Replace(Scripts.Replace(body, " "), " "), " ").Trim();
-            text = (title.Success ? title.Groups[1].Value.Trim() + " | " : "") + stripped;
+            var stripped = ToPlainText(body);
+            text = (title.Success ? WebUtility.HtmlDecode(title.Groups[1].Value).Trim() + " | " : "") + stripped;
         }
         else
         {

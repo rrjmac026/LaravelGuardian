@@ -262,10 +262,16 @@ public partial class MainViewModel : ObservableObject
             var results = await _http.RunAsync(baseUrl, DiscoveredRoutes, new HttpCheckOptions(), r =>
             {
                 if (r.Status == TestStatus.Skipped) return;
+                if (r.Metadata.GetValueOrDefault("classification") == "aborted") return; // summarized at the end
+
                 Log($"  {r.Status.ToString().ToUpper(),-8} {r.Name}  " +
                     $"[{r.HttpStatus?.ToString() ?? "-"}]  {r.Duration.TotalMilliseconds:0} ms  {r.Message}");
 
-                if (r.Status == TestStatus.Fail && r.Metadata.TryGetValue("bodySnippet", out var snippet)
+                // The message already carries the detected exception detail; show the raw
+                // snippet only when nothing readable was detected.
+                if (r.Status == TestStatus.Fail
+                    && string.IsNullOrWhiteSpace(r.ExceptionMessage)
+                    && r.Metadata.TryGetValue("bodySnippet", out var snippet)
                     && !string.IsNullOrWhiteSpace(snippet))
                     Log("      " + (snippet.Length > 300 ? snippet[..300] + "..." : snippet));
             }, ct);
@@ -278,7 +284,10 @@ public partial class MainViewModel : ObservableObject
 
     private void LogHttpSummary(IReadOnlyList<TestResult> results)
     {
-        var tested = results.Where(r => r.Status != TestStatus.Skipped).ToList();
+        static bool IsAborted(TestResult r) => r.Metadata.GetValueOrDefault("classification") == "aborted";
+
+        var tested = results.Where(r => r.Status != TestStatus.Skipped && !IsAborted(r)).ToList();
+        var notRun = results.Where(IsAborted).ToList();
         int Count(TestStatus s) => tested.Count(r => r.Status == s);
 
         Log($"HTTP checks: {tested.Count} checked | {Count(TestStatus.Pass)} passed | " +
@@ -290,6 +299,9 @@ public partial class MainViewModel : ObservableObject
             .OrderByDescending(g => g.Count())
             .Select(g => $"{g.Count()} {g.Key}");
         if (tested.Count > 0) Log("  Breakdown: " + string.Join(", ", byClass));
+
+        if (notRun.Count > 0)
+            Log($"  Stopped early, {notRun.Count} more route(s) not run. {notRun[0].Message}");
 
         static string Label(string code) => code switch
         {

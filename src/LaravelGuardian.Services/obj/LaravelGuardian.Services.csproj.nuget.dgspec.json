@@ -392,6 +392,10 @@
             "Microsoft.Data.Sqlite": {
               "target": "Package",
               "version": "[10.0.12, )"
+            },
+            "System.Security.Cryptography.ProtectedData": {
+              "target": "Package",
+              "version": "[10.0.12, )"
             }
           },
           "imports": [
