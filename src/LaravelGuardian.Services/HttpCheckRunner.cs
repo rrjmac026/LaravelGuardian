@@ -1,18 +1,15 @@
 using System.Diagnostics;
 using System.Net;
-using System.Text;
-using System.Text.Json;
 using System.Text.RegularExpressions;
 using LaravelGuardian.Core.Interfaces;
 using LaravelGuardian.Core.Models;
 
 namespace LaravelGuardian.Services;
 
-public class HttpCheckRunner : IHttpCheckRunner
+/// Safe-mode HTTP checks. This file holds the run logic; response analysis is in HttpCheckRunner.Response.cs.
+public partial class HttpCheckRunner : IHttpCheckRunner
 {
     private const int MaxRedirects = 5;
-    private const int MaxBodyBytes = 1_000_000;
-    private const int MaxTextChars = 200_000;
     private const int RepeatedErrorLimit = 3;
 
     private static readonly HashSet<string> DangerousTokens = new(StringComparer.OrdinalIgnoreCase)
@@ -21,49 +18,24 @@ public class HttpCheckRunner : IHttpCheckRunner
         "seed", "migrate", "artisan", "impersonate", "backup", "export", "download"
     };
 
-    private static readonly HashSet<string> SensitiveHeaders = new(StringComparer.OrdinalIgnoreCase)
+    // Extra caution once logged in: GET routes with these words often change data.
+    private static readonly HashSet<string> AuthDangerousTokens = new(StringComparer.OrdinalIgnoreCase)
     {
-        "set-cookie", "cookie", "authorization", "proxy-authorization", "x-csrf-token", "x-xsrf-token"
+        "approve", "reject", "cancel", "clear", "reset", "revoke", "toggle", "sync", "send",
+        "restore", "archive", "activate", "deactivate", "mark", "publish", "unpublish"
     };
-
-    private static readonly Regex ExceptionClass = new(
-        @"\b(?:[A-Z][A-Za-z0-9_]*\\)+[A-Z][A-Za-z0-9_]*(?:Exception|Error)\b", RegexOptions.Compiled);
-    private static readonly Regex Scripts = new(
-        @"<(script|style)\b[^>]*>.*?</\1>", RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.IgnoreCase);
-    private static readonly Regex Comments = new(
-        @"<!--.*?-->", RegexOptions.Compiled | RegexOptions.Singleline);
-    // Quote-aware: a '>' inside "..." or '...' (e.g. x-data="() => x") does not end the tag.
-    private static readonly Regex Tags = new(
-        @"<(?:[^>""']|""[^""]*""|'[^']*')*>", RegexOptions.Compiled);
-    private static readonly Regex Spaces = new(@"\s+", RegexOptions.Compiled);
-    private static readonly Regex Title = new(
-        @"<title[^>]*>(.*?)</title>", RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.IgnoreCase);
-    private static readonly Regex SqlState = new(
-        @"SQLSTATE\[[^\]]+\][^(]{0,200}", RegexOptions.Compiled);
-    private static readonly Regex AfterClass = new(
-        @"^\s*(?:\S+\.php\s*:?\s*\d+\s*)?(.{1,200})", RegexOptions.Compiled);
-    private static readonly Regex Secrets = new(
-        @"(?i)((?:_token|csrf-token|password|secret|api[_-]?key|authorization|cookie)[""']?\s*(?:[:=]|content=|value=)\s*[""'])[^""']+",
-        RegexOptions.Compiled);
 
     public async Task<IReadOnlyList<TestResult>> RunAsync(
         string baseUrl, IReadOnlyList<RouteInfo> routes, HttpCheckOptions options,
-        Action<TestResult>? onResult = null, CancellationToken ct = default)
+        AuthSession? auth = null, Action<TestResult>? onResult = null, CancellationToken ct = default)
     {
         var results = new List<TestResult>();
         var baseUri = new Uri(baseUrl);
 
-        var handler = new SocketsHttpHandler
-        {
-            AllowAutoRedirect = false,   // we follow redirects ourselves to classify them
-            UseCookies = false,          // every request is a fresh guest
-            AutomaticDecompression = DecompressionMethods.All,
-            ConnectTimeout = TimeSpan.FromSeconds(5)
-        };
-        using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(options.TimeoutSeconds) };
-        http.DefaultRequestHeaders.UserAgent.ParseAdd("LaravelGuardian/0.1");
-        http.DefaultRequestHeaders.TryAddWithoutValidation(
-            "Accept", "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8");
+        var canAuth = auth is { Success: true, Cookies: not null };
+
+        using var guestHttp = CreateClient(options, null);                        // fresh guest, no cookies
+        using var authHttp = canAuth ? CreateClient(options, auth!.Cookies) : null; // logged-in session
 
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         int tested = 0;
@@ -76,7 +48,7 @@ public class HttpCheckRunner : IHttpCheckRunner
         {
             ct.ThrowIfCancellationRequested();
 
-            var skip = GetSkipReason(route, options);
+            var skip = GetSkipReason(route, options, canAuth);
             if (skip is null)
             {
                 var key = "/" + route.Uri.TrimStart('/');
@@ -101,13 +73,15 @@ public class HttpCheckRunner : IHttpCheckRunner
             }
 
             tested++;
-            var result = await CheckAsync(http, baseUri, route, options, ct);
+            var authed = route.RequiresAuth && authHttp is not null;
+            var client = authed ? authHttp! : guestHttp;
+            var result = await CheckAsync(client, baseUri, route, options, authed, ct);
             results.Add(result);
             onResult?.Invoke(result);
 
             if (result.Status == TestStatus.Blocked) break; // server unreachable, no point continuing
 
-            // Same server error several times in a row = one environment problem, not many bugs.
+            // Same server error several times in a row = probably one shared cause, not many bugs.
             var signature = ErrorSignature(result);
             if (signature is not null && signature == lastSignature) repeat++;
             else { lastSignature = signature; repeat = signature is null ? 0 : 1; }
@@ -118,8 +92,7 @@ public class HttpCheckRunner : IHttpCheckRunner
                 if (!string.IsNullOrWhiteSpace(result.ExceptionMessage))
                     what += " - " + Shorten(result.ExceptionMessage!, 120);
                 abortReason = $"Not run: {repeat} routes in a row failed with the same error ({what}). " +
-                              "Likely an environment problem (database, config), not separate bugs. " +
-                              "Fix it and run again.";
+                              "These failures probably share one cause. Fix that first, then run again.";
             }
 
             if (options.DelayMs > 0) await Task.Delay(options.DelayMs, ct);
@@ -128,10 +101,28 @@ public class HttpCheckRunner : IHttpCheckRunner
         return results;
     }
 
+    private static HttpClient CreateClient(HttpCheckOptions options, CookieContainer? cookies)
+    {
+        var handler = new SocketsHttpHandler
+        {
+            AllowAutoRedirect = false,   // we follow redirects ourselves to classify them
+            UseCookies = cookies is not null,
+            AutomaticDecompression = DecompressionMethods.All,
+            ConnectTimeout = TimeSpan.FromSeconds(5)
+        };
+        if (cookies is not null) handler.CookieContainer = cookies;
+
+        var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(options.TimeoutSeconds) };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("LaravelGuardian/0.1");
+        http.DefaultRequestHeaders.TryAddWithoutValidation(
+            "Accept", "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8");
+        return http;
+    }
+
     // ---------- one route ----------
 
     private async Task<TestResult> CheckAsync(
-        HttpClient http, Uri baseUri, RouteInfo route, HttpCheckOptions o, CancellationToken ct)
+        HttpClient http, Uri baseUri, RouteInfo route, HttpCheckOptions o, bool authed, CancellationToken ct)
     {
         var path = route.Uri == "/" ? "/" : "/" + route.Uri.TrimStart('/');
         var url = new Uri(baseUri, path).ToString();
@@ -141,10 +132,13 @@ public class HttpCheckRunner : IHttpCheckRunner
             Category = route.IsApi ? "API" : "Routes",
             Name = $"GET {path}",
             Url = url,
-            Expected = "2xx, or a redirect to a working page"
+            Expected = authed
+                ? "2xx for the logged-in test account"
+                : "2xx, or a redirect to a working page"
         };
         if (!string.IsNullOrEmpty(route.Name)) result.Metadata["routeName"] = route.Name!;
         if (!string.IsNullOrEmpty(route.Action)) result.Metadata["action"] = route.Action!;
+        if (authed) result.Metadata["authenticated"] = "true";
 
         var sw = Stopwatch.StartNew();
         var hops = new List<string>();
@@ -193,8 +187,14 @@ public class HttpCheckRunner : IHttpCheckRunner
                             $"Redirects to a different origin ({next.GetLeftPart(UriPartial.Authority)}); not followed");
 
                     if (IsLoginPath(next) && !IsLoginPath(new Uri(current)))
+                    {
+                        if (authed)
+                            return Done(TestStatus.Warning, Severity.Medium, "session-lost",
+                                $"Redirected to {next.AbsolutePath} even with a logged-in session");
+
                         return Done(TestStatus.Pass, Severity.Info, "auth-redirect",
                             $"Guest is redirected to {next.AbsolutePath}");
+                    }
 
                     if (!visited.Add(next.ToString()) || hop >= MaxRedirects)
                         return Done(TestStatus.Fail, Severity.Medium, "redirect-loop",
@@ -236,8 +236,23 @@ public class HttpCheckRunner : IHttpCheckRunner
                 }
 
                 if (status == 401 || status == 403)
+                {
+                    if (authed)
+                    {
+                        // 403 with a logged-in account = role separation working (expected).
+                        if (status == 403)
+                            return Done(TestStatus.Pass, Severity.Info, "forbidden-for-role",
+                                $"HTTP 403{via}: this test account's role is not allowed here (expected)");
+
+                        // 401 with a session means the session was lost: a real problem.
+                        Attach(response, body, contentType);
+                        return Done(TestStatus.Warning, Severity.Medium, "session-lost",
+                            $"HTTP 401{via} even with a logged-in session");
+                    }
+
                     return Done(TestStatus.Pass, Severity.Info, status == 401 ? "unauthorized" : "forbidden",
                         $"HTTP {status}{via}: access denied for an unauthenticated guest");
+                }
 
                 Attach(response, body, contentType);
 
@@ -275,14 +290,18 @@ public class HttpCheckRunner : IHttpCheckRunner
         }
         catch (HttpRequestException ex)
         {
-            return Done(TestStatus.Blocked, Severity.High, "unreachable",
-                $"Could not reach the server ({ex.Message}). Remaining HTTP checks were not run.");
+            // Stop the whole run only if the server is really gone.
+            return await IsListeningAsync(new Uri(baseUri, "/"), ct)
+                ? Done(TestStatus.Fail, Severity.High, "connection-error",
+                    $"The server closed the connection without a proper response ({ex.Message})")
+                : Done(TestStatus.Blocked, Severity.High, "unreachable",
+                    $"Could not reach the server ({ex.Message}). Remaining HTTP checks were not run.");
         }
     }
 
     // ---------- skipping rules (Safe Mode) ----------
 
-    private static (string Reason, string Code)? GetSkipReason(RouteInfo route, HttpCheckOptions o)
+    private static (string Reason, string Code)? GetSkipReason(RouteInfo route, HttpCheckOptions o, bool canAuth)
     {
         if (!string.IsNullOrEmpty(route.Domain))
             return ($"Domain-bound route ({route.Domain})", "domain");
@@ -293,12 +312,15 @@ public class HttpCheckRunner : IHttpCheckRunner
         if (route.HasParameters)
             return ("Has route parameters; needs real values", "parameters");
 
-        if (route.RequiresAuth)
-            return ("Requires authentication (test accounts come in a later step)", "auth");
+        if (route.RequiresAuth && !canAuth)
+            return ("Requires login; no logged-in test account was used", "auth");
 
         var tokens = route.Uri.Split(new[] { '/', '-', '_', '.' }, StringSplitOptions.RemoveEmptyEntries);
         if (tokens.Any(DangerousTokens.Contains))
             return ("Excluded: path looks destructive or heavy for a GET", "excluded");
+
+        if (route.RequiresAuth && tokens.Any(AuthDangerousTokens.Contains))
+            return ("Excluded: while logged in, this GET path may change data", "excluded");
 
         if (MatchesExclude(route.Uri, o.ExcludePatterns))
             return ("Excluded by pattern", "excluded");
@@ -355,7 +377,7 @@ public class HttpCheckRunner : IHttpCheckRunner
         return $"{r.ExceptionType}|{r.ExceptionMessage}";
     }
 
-    // ---------- helpers ----------
+    // ---------- small URL helpers ----------
 
     private static bool SameOrigin(Uri a, Uri b) =>
         string.Equals(a.Host, b.Host, StringComparison.OrdinalIgnoreCase) && a.Port == b.Port;
@@ -366,106 +388,16 @@ public class HttpCheckRunner : IHttpCheckRunner
         return p.Contains("login") || p.Contains("signin") || p.Contains("sign-in");
     }
 
-    private static bool IsValidJson(string body)
+    private static async Task<bool> IsListeningAsync(Uri uri, CancellationToken ct)
     {
-        try { using var _ = JsonDocument.Parse(body); return true; }
-        catch (JsonException) { return false; }
-    }
-
-    private static async Task<(string Body, bool Truncated)> ReadBodyAsync(
-        HttpResponseMessage response, CancellationToken ct)
-    {
-        await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        var buffer = new byte[MaxBodyBytes + 1];
-        int total = 0;
-        while (total < buffer.Length)
+        try
         {
-            int n = await stream.ReadAsync(buffer.AsMemory(total, buffer.Length - total), ct);
-            if (n == 0) break;
-            total += n;
+            using var client = new System.Net.Sockets.TcpClient();
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(2));
+            await client.ConnectAsync(uri.Host, uri.Port, cts.Token);
+            return true;
         }
-        var truncated = total > MaxBodyBytes;
-        return (Encoding.UTF8.GetString(buffer, 0, Math.Min(total, MaxBodyBytes)), truncated);
-    }
-
-    private static string Shorten(string text, int max)
-    {
-        text = Spaces.Replace(text, " ").Trim();
-        return text.Length > max ? text[..max] + "..." : text;
-    }
-
-    /// HTML -> readable text: drops comments, scripts, styles and tags (quote-aware), decodes entities.
-    private static string ToPlainText(string html)
-    {
-        if (html.Length > MaxTextChars) html = html[..MaxTextChars];
-        html = Comments.Replace(html, " ");
-        html = Scripts.Replace(html, " ");
-        html = Tags.Replace(html, " ");
-        html = WebUtility.HtmlDecode(html);
-        return Spaces.Replace(html, " ").Trim();
-    }
-
-    private static (string? Type, string? Message) DetectException(string body, string contentType)
-    {
-        if (contentType.Contains("json", StringComparison.OrdinalIgnoreCase))
-        {
-            try
-            {
-                using var doc = JsonDocument.Parse(body);
-                if (doc.RootElement.ValueKind == JsonValueKind.Object)
-                {
-                    string? Str(string n) =>
-                        doc.RootElement.TryGetProperty(n, out var p) && p.ValueKind == JsonValueKind.String
-                            ? p.GetString() : null;
-                    var type = Str("exception");
-                    var message = Str("message");
-                    if (type is not null || message is not null) return (type, message);
-                }
-            }
-            catch (JsonException) { }
-        }
-
-        // Best-effort on a debug error page: first exception-looking class, plus its message.
-        var plain = ToPlainText(body);
-        var m = ExceptionClass.Match(plain);
-        string? exType = m.Success ? m.Value : null;
-        string? exMessage = null;
-
-        var sql = SqlState.Match(plain);
-        if (sql.Success)
-        {
-            exMessage = sql.Value.Trim();
-        }
-        else if (m.Success)
-        {
-            var rest = plain[(m.Index + m.Length)..];
-            var after = AfterClass.Match(rest);
-            if (after.Success) exMessage = after.Groups[1].Value.Trim();
-        }
-
-        return (exType, string.IsNullOrWhiteSpace(exMessage) ? null : exMessage);
-    }
-
-    private static string FormatHeaders(HttpResponseMessage r) =>
-        string.Join("\n", r.Headers.Concat(r.Content.Headers).Select(h =>
-            $"{h.Key}: {(SensitiveHeaders.Contains(h.Key) ? "[redacted]" : string.Join(", ", h.Value))}"));
-
-    /// Best-effort, privacy-limited snippet: HTML becomes title + plain text, secrets are masked.
-    private static string Snippet(string body, string contentType, int max)
-    {
-        string text;
-        if (contentType.Contains("html", StringComparison.OrdinalIgnoreCase))
-        {
-            var title = Title.Match(body);
-            var stripped = ToPlainText(body);
-            text = (title.Success ? WebUtility.HtmlDecode(title.Groups[1].Value).Trim() + " | " : "") + stripped;
-        }
-        else
-        {
-            text = body;
-        }
-
-        text = Secrets.Replace(text, "$1[redacted]");
-        return text.Length > max ? text[..max] + "..." : text;
+        catch { return false; }
     }
 }

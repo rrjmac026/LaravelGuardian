@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using LaravelGuardian.Core.Interfaces;
 using LaravelGuardian.Core.Models;
 
@@ -10,6 +11,10 @@ public sealed class ReportExporter : IReportExporter
 {
     private readonly IRunStore _store;
     public ReportExporter(IRunStore store) => _store = store;
+
+    private static readonly Regex EmailPattern = new(
+        @"(?<local>[A-Za-z0-9._%+\-]+)@(?<domain>[A-Za-z0-9.\-]+\.[A-Za-z]{2,})",
+        RegexOptions.Compiled);
 
     public async Task<ReportPaths> ExportAsync(Guid runId, CancellationToken ct = default)
     {
@@ -22,40 +27,55 @@ public sealed class ReportExporter : IReportExporter
         var htmlPath = Path.Combine(dir, "report.html");
         var jsonPath = Path.Combine(dir, "report.json");
 
-        await File.WriteAllTextAsync(jsonPath,
-            JsonSerializer.Serialize(new { run, results }, JsonDefaults.Pretty), ct);
-        await File.WriteAllTextAsync(htmlPath, BuildHtml(run, results), ct);
+        // Exported reports are meant to be shared: mask email addresses in both files.
+        var json = MaskEmails(JsonSerializer.Serialize(new { run, results }, JsonDefaults.Pretty));
+        var html = MaskEmails(BuildHtml(run, results));
+
+        await File.WriteAllTextAsync(jsonPath, json, ct);
+        await File.WriteAllTextAsync(htmlPath, html, ct);
         return new ReportPaths(htmlPath, jsonPath);
     }
 
+    /// "erven.granada@lccdo.edu.ph" -> "er***@lccdo.edu.ph"
+    private static string MaskEmails(string text) =>
+        EmailPattern.Replace(text, m =>
+        {
+            var local = m.Groups["local"].Value;
+            var visible = local.Length <= 2 ? local[..1] : local[..2];
+            return $"{visible}***@{m.Groups["domain"].Value}";
+        });
+
     private const string Css = @"
-body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#f5f6f8;color:#1c1f24}
-header{background:#1f2937;color:#fff;padding:20px 32px}
-header h1{margin:0 0 4px;font-size:22px} header div{opacity:.8;font-size:13px}
-main{padding:24px 32px;max-width:1100px}
-.cards{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:24px}
-.card{background:#fff;border-radius:8px;padding:12px 18px;min-width:90px;box-shadow:0 1px 2px #0002}
-.card b{display:block;font-size:24px}
-.Fail b{color:#c0392b}.Warning b{color:#b9770e}.Pass b{color:#1e8449}.Blocked b{color:#5b4b9a}
-h2{margin:28px 0 8px;font-size:17px}
-details{background:#fff;border-radius:6px;margin:6px 0;box-shadow:0 1px 2px #0002}
-summary{padding:8px 12px;cursor:pointer}
-details>div{padding:4px 14px 12px}
-.tag{display:inline-block;min-width:62px;text-align:center;border-radius:4px;color:#fff;font-size:11px;padding:2px 6px;margin-right:8px}
-.t-Fail{background:#c0392b}.t-Warning{background:#b9770e}.t-Blocked{background:#5b4b9a}.t-Pass{background:#1e8449}
-pre{background:#f0f1f4;padding:8px;border-radius:4px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:12px}
-table{border-collapse:collapse;width:100%;background:#fff} td,th{padding:5px 10px;border-bottom:1px solid #eee;text-align:left;font-size:13px}
-.note{background:#fff8e1;border-left:4px solid #f0b429;padding:8px 12px;font-size:13px;margin:12px 0}";
+        body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#f5f6f8;color:#1c1f24}
+        header{background:#1f2937;color:#fff;padding:20px 32px}
+        header h1{margin:0 0 4px;font-size:22px} header div{opacity:.8;font-size:13px}
+        main{padding:24px 32px;max-width:1100px}
+        .cards{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:24px}
+        .card{background:#fff;border-radius:8px;padding:12px 18px;min-width:90px;box-shadow:0 1px 2px #0002}
+        .card b{display:block;font-size:24px}
+        .Fail b{color:#c0392b}.Warning b{color:#b9770e}.Pass b{color:#1e8449}.Blocked b{color:#5b4b9a}
+        h2{margin:28px 0 8px;font-size:17px}
+        details{background:#fff;border-radius:6px;margin:6px 0;box-shadow:0 1px 2px #0002}
+        summary{padding:8px 12px;cursor:pointer}
+        details>div{padding:4px 14px 12px}
+        .tag{display:inline-block;min-width:62px;text-align:center;border-radius:4px;color:#fff;font-size:11px;padding:2px 6px;margin-right:8px}
+        .t-Fail{background:#c0392b}.t-Warning{background:#b9770e}.t-Blocked{background:#5b4b9a}.t-Pass{background:#1e8449}
+        pre{background:#f0f1f4;padding:8px;border-radius:4px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:12px}
+        table{border-collapse:collapse;width:100%;background:#fff} td,th{padding:5px 10px;border-bottom:1px solid #eee;text-align:left;font-size:13px}
+        .note{background:#fff8e1;border-left:4px solid #f0b429;padding:8px 12px;font-size:13px;margin:12px 0}";
 
     private static string Label(string code) => code switch
     {
-        "auth" => "need auth",
+        "auth" => "need auth (no login used)",
         "parameters" => "have parameters",
         "method" => "non-GET (Safe Mode)",
         "excluded" => "excluded as risky",
         "domain" => "domain-bound",
         "duplicate" => "duplicates",
         "limit" => "over the route limit",
+        "closure" => "closures",
+        "invokable" => "invokable controllers",
+        "vendor" => "vendor or framework controllers",
         _ => code
     };
 
@@ -84,9 +104,15 @@ table{border-collapse:collapse;width:100%;background:#fff} td,th{padding:5px 10p
         Card("", "Skipped", run.Skipped);
         sb.Append("</div>");
 
-        sb.Append("<div class=\"note\">HTTP checks run as a guest in Safe Mode (GET only). " +
-                  "Routes behind authentication are not covered until test accounts exist. " +
-                  "Evidence is redacted on a best-effort basis; review it before sharing this report.</div>");
+        var loggedIn = results.Count(r => r.Metadata.GetValueOrDefault("authenticated") == "true");
+        var scope = loggedIn > 0
+            ? $"HTTP checks are GET only (Safe Mode). {loggedIn} route(s) were checked with a logged-in test account; " +
+              "routes that belong to other roles or need route parameters are not covered. "
+            : "HTTP checks run as a guest in Safe Mode (GET only). Routes behind authentication were not covered " +
+              "because no logged-in test account was used. ";
+        sb.Append("<div class=\"note\">").Append(E(scope))
+          .Append("Email addresses are masked in this report. Other evidence is redacted on a best-effort basis; " +
+                  "review it before sharing.</div>");
 
         // Problems
         var problems = results

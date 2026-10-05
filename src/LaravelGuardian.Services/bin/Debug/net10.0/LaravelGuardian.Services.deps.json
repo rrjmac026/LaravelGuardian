@@ -9,7 +9,8 @@
       "LaravelGuardian.Services/1.0.0": {
         "dependencies": {
           "LaravelGuardian.Core": "1.0.0",
-          "Microsoft.Data.Sqlite": "10.0.12"
+          "Microsoft.Data.Sqlite": "10.0.12",
+          "System.Security.Cryptography.ProtectedData": "10.0.12"
         },
         "runtime": {
           "LaravelGuardian.Services.dll": {}
@@ -178,6 +179,14 @@
           }
         }
       },
+      "System.Security.Cryptography.ProtectedData/10.0.12": {
+        "runtime": {
+          "lib/net10.0/System.Security.Cryptography.ProtectedData.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          }
+        }
+      },
       "LaravelGuardian.Core/1.0.0": {
         "runtime": {
           "LaravelGuardian.Core.dll": {
@@ -235,6 +244,13 @@
       "sha512": "sha512-W3oH4XIfCzFrgUSDKHhN6N+dgzA5YHOR2VxX8GB6Qy7CyrJJgxPEG8NirgYWlPQC5P2jz2knSsexWu4tDUL33g==",
       "path": "sqlitepclraw.provider.e_sqlite3/2.1.12",
       "hashPath": "sqlitepclraw.provider.e_sqlite3.2.1.12.nupkg.sha512"
+    },
+    "System.Security.Cryptography.ProtectedData/10.0.12": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-wO0W8VDMeRJZakRySOmemAnrBZMwEFRlbfBtATxUiLf2I3IhSRnCp1Vt157NWptdE4IJ7eftd5n8q9LtaKHFTQ==",
+      "path": "system.security.cryptography.protecteddata/10.0.12",
+      "hashPath": "system.security.cryptography.protecteddata.10.0.12.nupkg.sha512"
     },
     "LaravelGuardian.Core/1.0.0": {
       "type": "project",

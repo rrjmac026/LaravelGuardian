@@ -15,7 +15,18 @@ public partial class MainWindow : Window
         DataContext = vm;
 
         vm.Activity.CollectionChanged += OnActivityChanged;
+
+        // Push a password set by the ViewModel (saved or seeder account) into the PasswordBox.
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(MainViewModel.AccountPassword)
+                && AccountPasswordBox.Password != vm.AccountPassword)
+                AccountPasswordBox.Password = vm.AccountPassword;
+        };
     }
+
+    private void AccountPassword_Changed(object sender, RoutedEventArgs e) =>
+        _vm.AccountPassword = AccountPasswordBox.Password;
 
     private void OnActivityChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {

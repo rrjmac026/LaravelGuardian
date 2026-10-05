@@ -147,9 +147,13 @@ public class NativeTestRunner : INativeTestRunner
             {
                 var names = XDocument.Load(full).Descendants()
                     .Where(e => e.Name.LocalName is "env" or "server")
-                    .Select(e => (string?)e.Attribute("name"));
-                if (names.Any(n => n is "DB_CONNECTION" or "DB_DATABASE")) return true;
-                reason = $"{file} does not set DB_CONNECTION or DB_DATABASE for tests.";
+                    .Select(e => (string?)e.Attribute("name"))
+                    .ToList();
+
+                // DB_CONNECTION alone can still point at the dev database, so DB_DATABASE must be overridden.
+                if (names.Contains("DB_DATABASE")) return true;
+
+                reason = $"{file} does not override DB_DATABASE for tests.";
                 return false;
             }
             catch

@@ -58,12 +58,17 @@ public partial class App : Application
                 s.AddSingleton<IArtisanRunner, ArtisanRunner>();
                 s.AddSingleton<INativeTestRunner, NativeTestRunner>();
                 s.AddSingleton<IRouteScanner, RouteScanner>();
+                s.AddSingleton<IMigrationChecker, MigrationChecker>();
                 s.AddSingleton<IHttpCheckRunner, HttpCheckRunner>();
+                s.AddSingleton<ISeederScanner, SeederScanner>();
+                s.AddSingleton<ISecretStore, SecretStore>();
+                s.AddSingleton<IAuthLogin, AuthLogin>();
                 s.AddSingleton<IRunStore, RunStore>();
                 s.AddSingleton<IRunSession, RunSession>();
                 s.AddSingleton<IReportExporter, ReportExporter>();
                 s.AddSingleton<ResultsViewModel>();
                 s.AddTransient<ResultsWindow>();
+                s.AddSingleton<IControllerChecker, ControllerChecker>();
             })
             .Build();
 

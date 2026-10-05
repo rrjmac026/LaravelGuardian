@@ -16,6 +16,9 @@ public partial class MainViewModel : ObservableObject
     private readonly INativeTestRunner _tests;
     private readonly IRouteScanner _routes;
     private readonly IHttpCheckRunner _http;
+    private readonly ISeederScanner _seeders;
+    private readonly ISecretStore _secrets;
+    private readonly IAuthLogin _login;
     private CancellationTokenSource? _runCts;
     private readonly IRunSession _session;
     private readonly IServiceProvider _services;
@@ -24,7 +27,8 @@ public partial class MainViewModel : ObservableObject
     public MainViewModel(
         IProjectScanner scanner, IToolDetector tools, IEnvironmentManager env,
         IProcessManager processes, INativeTestRunner tests, IRouteScanner routes,
-        IHttpCheckRunner http, IRunSession session, IServiceProvider services)
+        IHttpCheckRunner http, IRunSession session, IServiceProvider services,
+        ISeederScanner seeders, ISecretStore secrets, IAuthLogin login)
     {
         _session = session;
         _services = services;
@@ -34,6 +38,9 @@ public partial class MainViewModel : ObservableObject
         _tests = tests;
         _routes = routes;
         _http = http;
+        _seeders = seeders;
+        _secrets = secrets;
+        _login = login;
 
         processes.OutputReceived += (name, line, isError) =>
             Log($"[{name}] {(isError ? "ERR " : "")}{line}");
@@ -49,6 +56,12 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _summary = "No project selected";
     [ObservableProperty] private string _baseUrl = "";
     [ObservableProperty] private bool _allowSharedDatabase;
+
+    // Test account used for the logged-in HTTP checks
+    [ObservableProperty] private string _accountEmail = "";
+    [ObservableProperty] private string _accountPassword = "";
+    [ObservableProperty] private bool _rememberAccount = true;
+    [ObservableProperty] private SeededAccount? _selectedAccount;
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(StartEnvironmentCommand))]
@@ -77,9 +90,17 @@ public partial class MainViewModel : ObservableObject
 
     public ObservableCollection<ToolInfo> DetectedTools { get; } = new();
     public ObservableCollection<string> Activity { get; } = new();
+    public ObservableCollection<SeededAccount> DetectedAccounts { get; } = new();
 
     public List<RouteInfo> DiscoveredRoutes { get; private set; } = new();
     public List<TestResult> LastHttpResults { get; private set; } = new();
+
+    partial void OnSelectedAccountChanged(SeededAccount? value)
+    {
+        if (value is null) return;
+        AccountEmail = value.Email;
+        AccountPassword = value.Password ?? "";
+    }
 
     // ---------- Project selection ----------
 
@@ -104,6 +125,11 @@ public partial class MainViewModel : ObservableObject
             Log($"Scanning {ProjectPath}");
             Project = await _scanner.ScanAsync(ProjectPath);
             DiscoveredRoutes = new List<RouteInfo>();
+
+            DetectedAccounts.Clear();
+            SelectedAccount = null;
+            AccountEmail = "";
+            AccountPassword = "";
 
             if (!Project.IsLaravel)
             {
@@ -130,6 +156,8 @@ public partial class MainViewModel : ObservableObject
                 DetectedTools.Add(t);
                 Log($"{t.Name}: {(t.Found ? t.Version : "NOT FOUND")}");
             }
+
+            await LoadAccountsAsync();
         }
         catch (Exception ex)
         {
@@ -137,6 +165,54 @@ public partial class MainViewModel : ObservableObject
             Serilog.Log.Error(ex, "Project scan failed");
         }
         finally { IsBusy = false; }
+    }
+
+    private async Task LoadAccountsAsync()
+    {
+        try
+        {
+            var saved = _secrets.Load(ProjectPath);
+            var found = await _seeders.ScanAsync(ProjectPath);
+
+            foreach (var a in found) DetectedAccounts.Add(a);
+            Log(found.Count > 0
+                ? $"Seeder scan: {found.Count} account(s) found: {string.Join(", ", found.Select(a => a.Display))}"
+                : "Seeder scan: no accounts found in database/seeders");
+
+            if (saved is not null)
+            {
+                AccountEmail = saved.Email;
+                AccountPassword = saved.Password ?? "";
+                Log($"Saved test account loaded: {saved.Email}" +
+                    (string.IsNullOrEmpty(saved.Password) ? " (password must be typed again)" : ""));
+            }
+            else if (found.Count > 0)
+            {
+                var pick = found.FirstOrDefault(a => string.Equals(a.Role, "admin", StringComparison.OrdinalIgnoreCase))
+                           ?? found[0];
+                SelectedAccount = pick;
+                Log($"Suggested test account: {pick.Display}" +
+                    (string.IsNullOrEmpty(pick.Password) ? ". Password not found in the seeder, type it below." : ""));
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"Account lookup failed: {ex.Message}");
+            Serilog.Log.Error(ex, "Account lookup failed");
+        }
+    }
+
+    [RelayCommand]
+    private void ForgetAccount()
+    {
+        if (string.IsNullOrWhiteSpace(ProjectPath)) return;
+        try { _secrets.Delete(ProjectPath); }
+        catch (Exception ex) { Log($"Could not remove the saved account: {ex.Message}"); return; }
+
+        SelectedAccount = null;
+        AccountEmail = "";
+        AccountPassword = "";
+        Log("Saved test account removed for this project.");
     }
 
     // ---------- Environment ----------
@@ -257,9 +333,38 @@ public partial class MainViewModel : ObservableObject
                 if (!await DiscoverRoutesCoreAsync(project, ct)) return;
             }
 
+            // One login (the only POST), then GET-only checks with that session.
+            AuthSession? session = null;
+            var email = AccountEmail.Trim();
+            if (email.Length > 0 && !string.IsNullOrEmpty(AccountPassword))
+            {
+                Log($"Logging in as {email} (the only POST Guardian sends)...");
+                var attempt = await _login.LoginAsync(baseUrl, email, AccountPassword, ct);
+                Log($"  {attempt.Result.Status.ToString().ToUpper(),-8} {attempt.Result.Name}: {attempt.Message}");
+                await SaveAsync("auth", new[] { attempt.Result });
+
+                if (attempt.Success)
+                {
+                    session = attempt;
+                    if (RememberAccount)
+                    {
+                        try { _secrets.Save(ProjectPath, email, AccountPassword); }
+                        catch (Exception ex) { Log($"Could not save the account: {ex.Message}"); }
+                    }
+                }
+                else
+                {
+                    Log("  Continuing with guest checks only.");
+                }
+            }
+            else
+            {
+                Log("No test account set, so routes that need login will not be tested.");
+            }
+
             Log($"Running HTTP checks against {baseUrl} (GET only, one request at a time)...");
 
-            var results = await _http.RunAsync(baseUrl, DiscoveredRoutes, new HttpCheckOptions(), r =>
+            var results = await _http.RunAsync(baseUrl, DiscoveredRoutes, new HttpCheckOptions(), session, r =>
             {
                 if (r.Status == TestStatus.Skipped) return;
                 if (r.Metadata.GetValueOrDefault("classification") == "aborted") return; // summarized at the end
@@ -300,12 +405,16 @@ public partial class MainViewModel : ObservableObject
             .Select(g => $"{g.Count()} {g.Key}");
         if (tested.Count > 0) Log("  Breakdown: " + string.Join(", ", byClass));
 
+        var loggedIn = tested.Count(r => r.Metadata.GetValueOrDefault("authenticated") == "true");
+        if (loggedIn > 0)
+            Log($"  Logged-in checks: {loggedIn} of {tested.Count} (the rest were guest checks)");
+
         if (notRun.Count > 0)
             Log($"  Stopped early, {notRun.Count} more route(s) not run. {notRun[0].Message}");
 
         static string Label(string code) => code switch
         {
-            "auth" => "need auth",
+            "auth" => "need auth (no login used)",
             "parameters" => "have parameters",
             "method" => "non-GET (Safe Mode)",
             "excluded" => "excluded as risky",
