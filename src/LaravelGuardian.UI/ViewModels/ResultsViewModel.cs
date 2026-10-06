@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
+using System.Text.Json;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using LaravelGuardian.Core.Interfaces;
@@ -12,13 +13,20 @@ namespace LaravelGuardian.UI.ViewModels;
 
 public sealed class ResultRow
 {
-    public ResultRow(TestResult r) => Result = r;
+    public ResultRow(TestResult r, bool hasScreenshot)
+    {
+        Result = r;
+        HasScreenshot = hasScreenshot;
+    }
+
     public TestResult Result { get; }
+    public bool HasScreenshot { get; }
     public string Status => Result.Status.ToString();
     public string Source => Result.Metadata.GetValueOrDefault("source", "");
     public string Name => Result.Name;
     public string Http => Result.HttpStatus?.ToString() ?? "-";
     public int Ms => (int)Result.Duration.TotalMilliseconds;
+    public string Shot => HasScreenshot ? "📷" : "";
     public string Message => Result.Message ?? "";
 }
 
@@ -29,6 +37,9 @@ public partial class ResultsViewModel : ObservableObject
     private readonly IReportExporter _exporter;
     private List<TestResult> _all = new();
 
+    // File name -> full path of every screenshot found in the selected run's folders.
+    private readonly Dictionary<string, string> _shots = new(StringComparer.OrdinalIgnoreCase);
+
     public ResultsViewModel(IRunStore store, IRunSession session, IReportExporter exporter)
     {
         _store = store;
@@ -38,7 +49,8 @@ public partial class ResultsViewModel : ObservableObject
 
     public ObservableCollection<RunSummary> Runs { get; } = new();
     public ObservableCollection<ResultRow> Rows { get; } = new();
-    public string[] Filters { get; } = { "Problems", "All", "Pass", "Fail", "Warning", "Blocked", "Skipped" };
+    public string[] Filters { get; } =
+        { "Problems", "All", "Pass", "Fail", "Warning", "Blocked", "Skipped", "With screenshot" };
 
     [ObservableProperty] private string _filter = "Problems";
     [ObservableProperty] private RunSummary? _selectedRun;
@@ -49,8 +61,11 @@ public partial class ResultsViewModel : ObservableObject
 
     partial void OnSelectedRunChanged(RunSummary? value) => _ = LoadRunAsync(value);
     partial void OnFilterChanged(string value) => ApplyFilter();
-    partial void OnSelectedRowChanged(ResultRow? value) =>
-        Detail = value is null ? "" : BuildDetail(value.Result);
+    partial void OnSelectedRowChanged(ResultRow? value)
+    {
+        Detail = value is null ? "" : BuildDetail(value);
+        OpenScreenshotCommand.NotifyCanExecuteChanged();
+    }
 
     [RelayCommand]
     private async Task RefreshAsync()
@@ -99,15 +114,44 @@ public partial class ResultsViewModel : ObservableObject
         Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true });
     }
 
+    private bool CanOpenScreenshot() => SelectedRow?.HasScreenshot == true;
+
+    /// Enabled only when the selected row has a 📷. Double-clicking a row does the same.
+    [RelayCommand(CanExecute = nameof(CanOpenScreenshot))]
+    private void OpenScreenshot()
+    {
+        if (SelectedRow is null) return;
+
+        var tried = new List<string>();
+        var path = FindScreenshot(SelectedRow.Result, tried);
+        if (path is null)
+        {
+            Status = "Screenshot file not found (see the lookup list in the detail panel).";
+            Detail = BuildDetail(SelectedRow) + Environment.NewLine +
+                     "[screenshot lookup]" + Environment.NewLine +
+                     (tried.Count == 0 ? "No screenshot path is stored on this result." : string.Join(Environment.NewLine, tried));
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+            Status = $"Opened screenshot: {path}";
+        }
+        catch (Exception ex) { Status = $"Could not open screenshot: {ex.Message}"; }
+    }
+
     private async Task LoadRunAsync(RunSummary? run)
     {
         Rows.Clear();
         Detail = "";
         Comparison = "";
         _all = new List<TestResult>();
+        _shots.Clear();
         if (run is null) return;
 
         _all = (await _store.GetResultsAsync(run.Id)).ToList();
+        IndexScreenshots(run);
         ApplyFilter();
 
         var previous = Runs
@@ -139,15 +183,124 @@ public partial class ResultsViewModel : ObservableObject
         {
             "Problems" => _all.Where(r => r.Status is TestStatus.Fail or TestStatus.Warning or TestStatus.Blocked),
             "All" => _all,
+            "With screenshot" => _all.Where(HasScreenshot),
             _ => _all.Where(r => r.Status.ToString() == Filter)
         };
-        foreach (var r in q) Rows.Add(new ResultRow(r));
+
+        // Failures first; OrderBy is stable, so the original order is kept inside each group.
+        foreach (var r in q.OrderBy(r => Rank(r.Status))) Rows.Add(new ResultRow(r, HasScreenshot(r)));
     }
 
-    private static string BuildDetail(TestResult r)
+    private static int Rank(TestStatus s) => s switch
     {
+        TestStatus.Fail => 0,
+        TestStatus.Blocked => 1,
+        TestStatus.Warning => 2,
+        TestStatus.Skipped => 3,
+        _ => 4
+    };
+
+    // ---------- screenshots ----------
+
+    /// Lists every .png under the run's folders once, so each row can be checked cheaply.
+    private void IndexScreenshots(RunSummary run)
+    {
+        foreach (var dir in new[] { AppPaths.EvidenceDir(run.Id), AppPaths.RunDir(run.Id) }.Distinct())
+        {
+            if (!Directory.Exists(dir)) continue;
+            try
+            {
+                foreach (var file in Directory.EnumerateFiles(dir, "*.png", SearchOption.AllDirectories))
+                    _shots.TryAdd(Path.GetFileName(file), file);
+            }
+            catch { /* folder not readable */ }
+        }
+    }
+
+    /// True when a screenshot file for this result exists on disk.
+    private bool HasScreenshot(TestResult r)
+    {
+        if (!string.IsNullOrWhiteSpace(r.ScreenshotPath) && File.Exists(r.ScreenshotPath)) return true;
+
+        foreach (var (key, value) in r.Metadata)
+            if (key.Contains("screenshot", StringComparison.OrdinalIgnoreCase) && File.Exists(value))
+                return true;
+
+        return _shots.ContainsKey($"{r.Id:N}.png");
+    }
+
+    /// Looks for the screenshot file: the result's ScreenshotPath, any metadata entry with
+    /// "screenshot" in its key, any .png path in the evidence JSON, then the run's folder
+    /// index (files are named after the result id). Every path tried goes into `tried`.
+    private string? FindScreenshot(TestResult r, List<string>? tried = null)
+    {
+        var candidates = new List<string?> { r.ScreenshotPath };
+        foreach (var (key, value) in r.Metadata)
+            if (key.Contains("screenshot", StringComparison.OrdinalIgnoreCase))
+                candidates.Add(value);
+
+        if (!string.IsNullOrEmpty(r.EvidencePath) && File.Exists(r.EvidencePath))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(File.ReadAllText(r.EvidencePath));
+                foreach (var s in StringValues(doc.RootElement))
+                    if (s.EndsWith(".png", StringComparison.OrdinalIgnoreCase)) candidates.Add(s);
+            }
+            catch { /* unreadable evidence file */ }
+        }
+
+        var dirs = new List<string>();
+        if (SelectedRun is not null)
+        {
+            dirs.Add(AppPaths.EvidenceDir(SelectedRun.Id));
+            dirs.Add(AppPaths.RunDir(SelectedRun.Id));
+        }
+
+        foreach (var candidate in candidates)
+        {
+            var path = candidate?.Trim();
+            if (string.IsNullOrEmpty(path)) continue;
+
+            tried?.Add(path);
+            if (File.Exists(path)) return path;
+
+            foreach (var dir in dirs)
+            {
+                var combined = Path.Combine(dir, path);
+                if (File.Exists(combined)) return combined;
+            }
+        }
+
+        var fileName = $"{r.Id:N}.png";
+        tried?.Add($"run folder index: {fileName} ({_shots.Count} screenshot file(s) in the run folders)");
+        return _shots.TryGetValue(fileName, out var indexed) ? indexed : null;
+    }
+
+    private static IEnumerable<string> StringValues(JsonElement e)
+    {
+        switch (e.ValueKind)
+        {
+            case JsonValueKind.String:
+                yield return e.GetString() ?? "";
+                break;
+            case JsonValueKind.Array:
+                foreach (var item in e.EnumerateArray())
+                    foreach (var s in StringValues(item)) yield return s;
+                break;
+            case JsonValueKind.Object:
+                foreach (var prop in e.EnumerateObject())
+                    foreach (var s in StringValues(prop.Value)) yield return s;
+                break;
+        }
+    }
+
+    private string BuildDetail(ResultRow row)
+    {
+        var r = row.Result;
         var sb = new StringBuilder();
         sb.AppendLine($"{r.Status.ToString().ToUpper()}  {r.Name}   (severity {r.Severity})");
+        if (row.HasScreenshot) sb.AppendLine("📷 Screenshot available: double-click this row or press Open screenshot");
         if (r.Url is not null) sb.AppendLine($"URL: {r.Url}");
         if (r.HttpStatus is not null) sb.AppendLine($"HTTP: {r.HttpStatus}");
         if (!string.IsNullOrWhiteSpace(r.Message)) sb.AppendLine($"Message: {r.Message}");

@@ -22,7 +22,9 @@ public class ControllerChecker : IControllerChecker
         public bool Declared { get; set; }
         public string? Parent { get; set; }
         public List<string> Traits { get; } = new();
-        public HashSet<string> Methods { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+        /// Method name -> "public", "protected" or "private".
+        public Dictionary<string, string> Methods { get; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
     private sealed class Scope
@@ -36,8 +38,10 @@ public class ControllerChecker : IControllerChecker
             @"Illuminate\Foundation\Bus\DispatchesJobs"
         };
 
-        private static readonly Regex FunctionName = new(
-            @"\bfunction\s+&?\s*([A-Za-z_]\w*)\s*\(", RegexOptions.Compiled);
+        // Captures the modifiers in front of "function name(" so visibility can be checked.
+        private static readonly Regex FunctionDecl = new(
+            @"((?:\b(?:abstract|final|public|protected|private|static)\s+)*)function\s+&?\s*([A-Za-z_]\w*)\s*\(",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex NamespaceRx = new(
             @"\bnamespace\s+([\\\w]+)\s*;", RegexOptions.Compiled);
         private static readonly Regex SimpleImport = new(
@@ -47,6 +51,12 @@ public class ControllerChecker : IControllerChecker
         private static readonly Regex ImportPart = new(
             @"^([\\\w]+)(?:\s+as\s+(\w+))?$", RegexOptions.Compiled);
 
+        // Lines of vendor/composer/autoload_psr4.php, e.g.  'App\\' => array($baseDir . '/app'),
+        private static readonly Regex InstalledPsr4Line = new(
+            @"^\s*'(?<prefix>(?:[^'\\]|\\.)*)'\s*=>\s*array\((?<dirs>.*)\)\s*,?\s*$", RegexOptions.Compiled);
+        private static readonly Regex BaseDirPart = new(
+            @"\$baseDir\s*\.\s*'(?<dir>[^']*)'", RegexOptions.Compiled);
+
         private readonly string _root;
         private readonly List<(string Prefix, List<string> Dirs)> _prefixes = new();
         private readonly Dictionary<string, ClassFile?> _cache = new();
@@ -55,6 +65,7 @@ public class ControllerChecker : IControllerChecker
         {
             _root = root;
 
+            // 1) composer.json: the project's own PSR-4 mappings
             try
             {
                 var composer = System.IO.Path.Combine(root, "composer.json");
@@ -67,22 +78,51 @@ public class ControllerChecker : IControllerChecker
                     {
                         foreach (var p in psr4.EnumerateObject())
                         {
-                            var dirs = new List<string>();
                             if (p.Value.ValueKind == JsonValueKind.String)
-                                dirs.Add(p.Value.GetString()!);
+                                AddMapping(p.Name, p.Value.GetString()!);
                             else if (p.Value.ValueKind == JsonValueKind.Array)
-                                dirs.AddRange(p.Value.EnumerateArray()
-                                    .Select(x => x.GetString()).Where(x => x is not null).Select(x => x!));
-
-                            if (p.Name.Length > 0 && dirs.Count > 0) _prefixes.Add((p.Name, dirs));
+                                foreach (var d in p.Value.EnumerateArray())
+                                    if (d.ValueKind == JsonValueKind.String) AddMapping(p.Name, d.GetString()!);
                         }
                     }
                 }
             }
-            catch { /* fall back to the Laravel default below */ }
+            catch { /* fall back to the other sources below */ }
 
-            if (_prefixes.Count == 0) _prefixes.Add((@"App\", new List<string> { "app/" }));
+            // 2) vendor/composer/autoload_psr4.php: also covers modules and merged composer files.
+            //    Only entries that point into the project (not vendor/) are taken.
+            try
+            {
+                var installed = System.IO.Path.Combine(root, "vendor", "composer", "autoload_psr4.php");
+                if (File.Exists(installed))
+                {
+                    foreach (var line in File.ReadLines(installed))
+                    {
+                        var m = InstalledPsr4Line.Match(line);
+                        if (!m.Success) continue;
+
+                        var prefix = m.Groups["prefix"].Value.Replace(@"\\", @"\");
+                        foreach (Match d in BaseDirPart.Matches(m.Groups["dirs"].Value))
+                            AddMapping(prefix, d.Groups["dir"].Value);
+                    }
+                }
+            }
+            catch { /* optional source */ }
+
+            if (_prefixes.Count == 0) AddMapping(@"App\", "app");
             _prefixes.Sort((a, b) => b.Prefix.Length.CompareTo(a.Prefix.Length)); // longest prefix first
+        }
+
+        private void AddMapping(string prefix, string dir)
+        {
+            if (string.IsNullOrEmpty(prefix)) return;
+            dir = dir.Trim().Trim('/', '\\');
+
+            var idx = _prefixes.FindIndex(p => p.Prefix == prefix);
+            if (idx < 0)
+                _prefixes.Add((prefix, new List<string> { dir }));
+            else if (!_prefixes[idx].Dirs.Contains(dir, StringComparer.OrdinalIgnoreCase))
+                _prefixes[idx].Dirs.Add(dir);
         }
 
         // ---------- main run ----------
@@ -104,11 +144,10 @@ public class ControllerChecker : IControllerChecker
                 if (string.IsNullOrEmpty(action) || action.Equals("Closure", StringComparison.OrdinalIgnoreCase))
                 { Skip("closure", r); continue; }
 
+                // "Class@method" is a normal action; a bare class name is an invokable controller.
                 var at = action.IndexOf('@');
-                if (at < 0) { Skip("invokable", r); continue; }
-
-                var cls = action[..at].TrimStart('\\');
-                var method = action[(at + 1)..];
+                var cls = (at < 0 ? action : action[..at]).TrimStart('\\');
+                var method = at < 0 ? "__invoke" : action[(at + 1)..];
 
                 if (!IsProjectClass(cls)) { Skip("vendor", r); continue; }
 
@@ -130,7 +169,6 @@ public class ControllerChecker : IControllerChecker
                 var label = code switch
                 {
                     "closure" => "closures",
-                    "invokable" => "invokable controllers",
                     "vendor" => "vendor or framework controllers",
                     _ => code
                 };
@@ -177,9 +215,16 @@ public class ControllerChecker : IControllerChecker
                     "The file exists but does not declare this class");
 
             var unknown = new List<string>();
-            if (Search(cls, method, new HashSet<string>(), unknown, out var foundIn))
+            if (Search(cls, method, new HashSet<string>(), unknown, out var foundIn, out var visibility))
+            {
+                if (visibility != "public")
+                    return Set(result, TestStatus.Fail, Severity.High, "not public",
+                        $"Method is {visibility}, so the router cannot call it" +
+                        (foundIn == cls ? "" : $" (declared in {foundIn})"));
+
                 return Set(result, TestStatus.Pass, Severity.Info, "found",
                     foundIn == cls ? "Method found" : $"Method found in {foundIn}");
+            }
 
             var commented = Regex.IsMatch(file.Raw,
                 $@"\bfunction\s+&?\s*{Regex.Escape(method)}\s*\(", RegexOptions.IgnoreCase);
@@ -206,9 +251,10 @@ public class ControllerChecker : IControllerChecker
 
         /// Looks in the class, its traits and its parents (project files only).
         private bool Search(string fqcn, string method, HashSet<string> visited,
-            List<string> unknown, out string? foundIn)
+            List<string> unknown, out string? foundIn, out string visibility)
         {
             foundIn = null;
+            visibility = "public";
             if (!visited.Add(fqcn)) return false;
 
             var cls = LoadClass(fqcn);
@@ -218,16 +264,23 @@ public class ControllerChecker : IControllerChecker
                 return false;
             }
 
-            if (cls.Methods.Contains(method)) { foundIn = fqcn; return true; }
-            if (cls.Methods.Contains("__call")) unknown.Add($"{fqcn} (__call)");
+            if (cls.Methods.TryGetValue(method, out var vis))
+            {
+                foundIn = fqcn;
+                visibility = vis;
+                return true;
+            }
+            if (cls.Methods.ContainsKey("__call")) unknown.Add($"{fqcn} (__call)");
 
             foreach (var trait in cls.Traits)
-                if (Search(trait, method, visited, unknown, out foundIn)) return true;
+                if (Search(trait, method, visited, unknown, out foundIn, out visibility)) return true;
 
-            if (cls.Parent is not null && Search(cls.Parent, method, visited, unknown, out foundIn))
+            if (cls.Parent is not null
+                && Search(cls.Parent, method, visited, unknown, out foundIn, out visibility))
                 return true;
 
             foundIn = null;
+            visibility = "public";
             return false;
         }
 
@@ -280,7 +333,14 @@ public class ControllerChecker : IControllerChecker
             var shortName = fqcn[(fqcn.LastIndexOf('\\') + 1)..];
 
             var info = new ClassFile { Path = path, Raw = raw, Code = code };
-            foreach (Match m in FunctionName.Matches(code)) info.Methods.Add(m.Groups[1].Value);
+            foreach (Match m in FunctionDecl.Matches(code))
+            {
+                var modifiers = m.Groups[1].Value.ToLowerInvariant();
+                var visibility = modifiers.Contains("private") ? "private"
+                    : modifiers.Contains("protected") ? "protected"
+                    : "public";
+                info.Methods.TryAdd(m.Groups[2].Value, visibility);
+            }
 
             var ns = NamespaceRx.Match(code);
             var nsName = ns.Success ? ns.Groups[1].Value : "";

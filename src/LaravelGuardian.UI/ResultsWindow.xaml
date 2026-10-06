@@ -198,6 +198,12 @@
                 <DataTrigger Binding="{Binding Status}" Value="Blocked"><Setter Property="Foreground" Value="{StaticResource Lavender}"/></DataTrigger>
             </Style.Triggers>
         </Style>
+
+        <!-- Long text: trim with an ellipsis and show the full text on hover -->
+        <Style x:Key="TrimText" TargetType="TextBlock">
+            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+            <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+        </Style>
     </Window.Resources>
 
     <Grid Margin="20">
@@ -243,23 +249,31 @@
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
-            <!-- Toolbar -->
-            <Grid Margin="0,0,0,12">
-                <StackPanel Orientation="Horizontal">
+            <!-- Toolbar: the right-hand buttons wrap onto a second line on narrow windows -->
+            <Grid Margin="0,0,0,6">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,6" VerticalAlignment="Top">
                     <TextBlock Text="Show" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="{StaticResource Subtext}"/>
                     <ComboBox ItemsSource="{Binding Filters}" SelectedItem="{Binding Filter}"
                               Style="{StaticResource Combo}" Width="130"/>
                     <Button Content="⟳  Refresh" Style="{StaticResource Btn}" Margin="10,0,0,0"
                             Command="{Binding RefreshCommand}"/>
                 </StackPanel>
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                    <Button Content="Export HTML + JSON" Style="{StaticResource BtnPrimary}"
-                            Command="{Binding ExportReportCommand}"/>
-                    <Button Content="Open run folder" Style="{StaticResource Btn}" Margin="8,0,0,0"
-                            Command="{Binding OpenRunFolderCommand}"/>
-                    <Button Content="Show evidence file" Style="{StaticResource Btn}" Margin="8,0,0,0"
+
+                <WrapPanel Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="12,0,0,0">
+                    <Button Content="Open screenshot" Style="{StaticResource Btn}" Margin="8,0,0,6"
+                            Command="{Binding OpenScreenshotCommand}"/>
+                    <Button Content="Show evidence file" Style="{StaticResource Btn}" Margin="8,0,0,6"
                             Command="{Binding OpenEvidenceCommand}"/>
-                </StackPanel>
+                    <Button Content="Open run folder" Style="{StaticResource Btn}" Margin="8,0,0,6"
+                            Command="{Binding OpenRunFolderCommand}"/>
+                    <Button Content="Export HTML + JSON" Style="{StaticResource BtnPrimary}" Margin="8,0,0,6"
+                            Command="{Binding ExportReportCommand}"/>
+                </WrapPanel>
             </Grid>
 
             <!-- Comparison banner -->
@@ -278,14 +292,21 @@
                           ColumnHeaderStyle="{StaticResource GridHeader}"
                           CellStyle="{StaticResource GridCell}"
                           RowStyle="{StaticResource GridRow}">
+                    <DataGrid.InputBindings>
+                        <MouseBinding Gesture="LeftDoubleClick" Command="{Binding OpenScreenshotCommand}"/>
+                    </DataGrid.InputBindings>
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="STATUS" Binding="{Binding Status}" Width="90"
                                             ElementStyle="{StaticResource StatusText}"/>
-                        <DataGridTextColumn Header="SOURCE" Binding="{Binding Source}" Width="90"/>
-                        <DataGridTextColumn Header="NAME" Binding="{Binding Name}" Width="*"/>
+                        <DataGridTextColumn Header="SOURCE" Binding="{Binding Source}" Width="110"
+                                            ElementStyle="{StaticResource TrimText}"/>
+                        <DataGridTextColumn Header="NAME" Binding="{Binding Name}" Width="2*" MinWidth="320"
+                                            ElementStyle="{StaticResource TrimText}"/>
                         <DataGridTextColumn Header="HTTP" Binding="{Binding Http}" Width="65"/>
                         <DataGridTextColumn Header="MS" Binding="{Binding Ms}" Width="70"/>
-                        <DataGridTextColumn Header="MESSAGE" Binding="{Binding Message}" Width="2*"/>
+                        <DataGridTextColumn Header="SHOT" Binding="{Binding Shot}" Width="60"/>
+                        <DataGridTextColumn Header="MESSAGE" Binding="{Binding Message}" Width="2*" MinWidth="200"
+                                            ElementStyle="{StaticResource TrimText}"/>
                     </DataGrid.Columns>
                 </DataGrid>
             </Border>
