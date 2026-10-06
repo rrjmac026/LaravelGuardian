@@ -1,6 +1,6 @@
 # Laravel Guardian: Development Status
 
-*Snapshot date: 2026-10-05*
+*Snapshot date: 2026-10-07*
 *Solution location: `F:\Projects\LaravelGuardian`*
 *Test target used so far: `F:\Projects\scms` (Laravel 12, Vite, Pest)*
 
@@ -12,11 +12,11 @@ This document records what has been built so far, what every file does, how the 
 
 | Item | Status |
 |---|---|
-| Current position | **The core pipeline is built and verified on `scms`: project scan, environment boot, native tests, route discovery, migration status, guest and logged-in HTTP checks, controller-method audit, run history and report export.** |
-| Verified on a real project | Steps 1-4, the login step (4b), the migrations check (6), and the controller audit flow are present in the app; the route-level HTTP and migration checks were exercised on `scms`. |
-| Still to verify | The controller audit against a live Laravel project and the report export after the email-masking change (Results → Export HTML + JSON). |
-| MVP (draft §22) | Complete. Every step of the MVP flow exists and has run on `scms`. |
-| Next decision | Decide whether to expand the Phase 8 static checks or move to Playwright (Phase 5) after the controller audit is validated on a real project. |
+| Current position | **The core pipeline is built and verified on `scms`; a first Playwright browser-check slice is implemented and has also been exercised there.** |
+| Verified on a real project | Project scan, environment boot, native tests, route discovery, migration status, guest and logged-in HTTP checks, controller audit flow, and browser checks have been exercised on `scms`. |
+| Still to verify | Confirm exported email masking and screenshot access in Results; validate controller audit on a live project. Browser login for SPA/Inertia apps is not implemented yet. |
+| MVP (draft §22) | Complete. The original MVP flow is implemented; browser checks are an additional Phase 5 slice. |
+| Next decision | Close the report/screenshot verification gaps, then choose between extending browser coverage, Phase 8 static checks, or multi-role logged-in checks. |
 
 ### Steps completed in this build
 
@@ -31,10 +31,11 @@ This document records what has been built so far, what every file does, how the 
 | 5 | Results, run history, evidence and report export | Phase 7 | ✅ Delivered; Results window verified, export masking still to verify |
 | 6 | Migration status check (`php artisan migrate:status`, read-only) | Phase 3 | ✅ Done and verified (14 of 14 migrations ran on `scms`) |
 | 7 | Route-to-controller check | Phase 8 slice | ✅ Implemented in the app; needs a live-project validation pass |
+| 8 | Browser checks (Playwright/Chromium) | Phase 5 slice | ✅ First slice implemented and exercised on `scms`; broader coverage remains open |
 
 ---
 
-## 2. Progress report (2026-10-02 → 2026-10-05)
+## 2. Progress report (2026-10-02 → 2026-10-07)
 
 ### What was built or changed
 
@@ -52,6 +53,16 @@ This document records what has been built so far, what every file does, how the 
 | Migrations | New read-only `MigrationChecker` and a **Check Migrations** button. |
 | Dashboard | New buttons (Run HTTP Checks, Check Migrations), button rows wrap, window height 700. `MainViewModel` is now `partial` (`MainViewModel.Migrations.cs`). |
 
+### 2026-10-07: Browser engine and UI refresh
+
+| Area | Change |
+|---|---|
+| Browser engine | Added `IBrowserCheckRunner`, `BrowserOptions`, and `BrowserCheckRunner` using Playwright Chromium. The dashboard can run a browser crawl, attempt the existing localhost login, reuse successful session cookies, stream per-page results, and persist them under the `browser` source. |
+| Browser Safe Mode | Seeds the crawl from safe GET routes and same-origin links. It shares the HTTP runner's risky-path rules and blocks non-GET requests triggered by page scripts. |
+| Browser findings | Checks page status, uncaught JavaScript exceptions, console errors, failed requests, and 4xx/5xx subrequests. Failure pages can get screenshots; repeated console/network issues are deduplicated in the dashboard summary. |
+| Crawl limits | Defaults to 80 pages, depth 3, a 15-second navigation timeout, and 2 samples per similar URL pattern. Chromium is installed on first use when missing; engine startup/install failures are reported as `Blocked`. |
+| UI | Dashboard and Results windows were restyled with a dark card layout; the dashboard adds **Run Browser Checks**, and Results rows/status labels are tinted by outcome. |
+
 ### What was verified on `scms`
 
 | Run | Result |
@@ -61,6 +72,7 @@ This document records what has been built so far, what every file does, how the 
 | Logged-in HTTP checks after the report changes | 59 checked: **51 passed, 8 failed, 0 warnings**. Breakdown: 27 ok, 19 forbidden-for-role, 8 server-error, 2 auth-redirect, 2 redirect-external, 1 redirect. |
 | Migrations | All 14 migrations have run. |
 | Seeder scan | 6 accounts found (1 admin, 2 counselors, 2 students, 1 without a role). |
+| Browser checks | Verified login-cookie transfer, known 500 pages reported as failures with screenshots, repeated-issue deduplication, and sampling of similar pages. |
 
 ### Bugs found in `scms` (all real, none are Guardian problems)
 
@@ -90,7 +102,7 @@ Order is a suggestion. Items marked 🔵 are proposed and need a go before any c
 | 7 | **Scenario files (expectations)** | 9 | ⬜ Later | "Given these inputs, expect this output" for important calculations and workflows. |
 | 8 | **Baseline snapshots** | 9 | ⬜ Idea | Record what a page or API returns for known inputs and flag later changes (characterization testing). |
 | 9 | **Coverage view** | 8 / 10 | ⬜ Idea | Use pcov or Xdebug to list controllers and methods that neither the project's tests nor Guardian exercised. |
-| 10 | **Playwright browser engine** | 5 | ⬜ Not started | Real browser, console and network errors, screenshots on failure, crawler. |
+| 10 | **Playwright browser engine** | 5 | 🟡 First slice implemented | Bounded safe browser crawl and error/screenshot checks are in the app and exercised on `scms`. Follow-ups: SPA/Inertia login, query-aware coverage, in-page cancellation, screenshot access in Results, and interactive/form checks. |
 | 11 | **Reliability pass** | 2 / tests | ⬜ Planned | Windows Job Object for child processes; first real tests in `LaravelGuardian.Tests`; run retention and cleanup; split more of `MainViewModel`. |
 | 12 | **AI-assisted diagnosis** | 10 | ⬜ Future | Suggest likely causes from collected evidence. Never edits code. |
 
@@ -107,7 +119,7 @@ Order is a suggestion. Items marked 🔵 are proposed and need a go before any c
 - **Dev workflow:** VS Code + C# Dev Kit, run with `dotnet run --project src/LaravelGuardian.UI`
 - **Rule:** close the running Guardian window before rebuilding, or the DLL copy fails with a file-lock error. After pulling in new files, run `dotnet clean` first.
 
-NuGet packages: `LaravelGuardian.UI` uses `CommunityToolkit.Mvvm`, `Microsoft.Extensions.Hosting`, `Serilog.Extensions.Hosting`, and `Serilog.Sinks.File`; `LaravelGuardian.Services` uses `Microsoft.Data.Sqlite` and `System.Security.Cryptography.ProtectedData`.
+NuGet packages: `LaravelGuardian.UI` uses `CommunityToolkit.Mvvm`, `Microsoft.Extensions.Hosting`, `Serilog.Extensions.Hosting`, and `Serilog.Sinks.File`; `LaravelGuardian.Services` uses `Microsoft.Data.Sqlite`, `Microsoft.Playwright`, and `System.Security.Cryptography.ProtectedData`.
 
 Project references: `UI → Core, Services`; `Services → Core`; `Core → nothing`.
 
@@ -130,6 +142,7 @@ LaravelGuardian/
 │   │   ├── ResultsWindow.xaml.cs
 │   │   └── ViewModels/
 │   │       ├── MainViewModel.cs
+│   │   │   ├── MainViewModel.Browser.cs
 │   │       ├── MainViewModel.Controllers.cs (Check Controllers command)
 │   │       ├── MainViewModel.Migrations.cs   (Check Migrations command)
 │   │       └── ResultsViewModel.cs
@@ -137,6 +150,7 @@ LaravelGuardian/
 │   ├── LaravelGuardian.Core/
 │   │   ├── Models/
 │   │   │   ├── AuthModels.cs         (SeededAccount, AuthProfile, AuthSession)
+│   │   │   ├── BrowserModels.cs       (BrowserOptions)
 │   │   │   ├── TestStatus.cs         (TestStatus + Severity enums)
 │   │   │   ├── TestResult.cs
 │   │   │   ├── ProjectInfo.cs        (ProjectInfo + ToolInfo)
@@ -145,6 +159,7 @@ LaravelGuardian/
 │   │   │   └── RunModels.cs          (RunSummary, ReportPaths, RunComparison, RunComparer)
 │   │   └── Interfaces/
 │   │       ├── IAuth.cs              (ISeederScanner + ISecretStore + IAuthLogin)
+│   │       ├── IBrowser.cs           (IBrowserCheckRunner)
 │   │       ├── IProjectScanner.cs    (IProjectScanner + IToolDetector)
 │   │       ├── IEnvironment.cs       (IProcessManager + IEnvironmentManager)
 │   │       ├── ILaravel.cs           (IArtisanRunner + INativeTestRunner + IRouteScanner)
@@ -153,6 +168,7 @@ LaravelGuardian/
 │   │       └── IReporting.cs         (IRunStore, IRunSession, IReportExporter)
 │   │
 │   └── LaravelGuardian.Services/
+│       ├── BrowserCheckRunner.cs    (Playwright browser crawl and page checks)
 │       ├── AuthLogin.cs             (single login step for protected-route checks)
 │       ├── SeederScanner.cs         (reads seeders/factories for candidate accounts)
 │       ├── SecretStore.cs           (encrypts remembered account credentials per project)
@@ -195,6 +211,7 @@ Core has no dependencies. It holds the data shapes and interfaces every other pr
 | `LaravelModels.cs` | `CommandResult`, `RouteInfo`, `RouteScanResult` | `CommandResult`: outcome of a one-shot command (exit code, stdout, stderr, duration, timed-out, started). `RouteInfo`: one route with computed helpers `IsGet`, `HasParameters`, `IsApi`, `RequiresAuth`. `RouteScanResult`: a `TestResult` plus the route list. |
 | `HttpModels.cs` | `HttpCheckOptions` | Knobs for the HTTP engine: timeout (30 s), slow threshold (5000 ms), delay between requests, max routes (200), exclude patterns. |
 | `AuthModels.cs` | `SeededAccount`, `AuthProfile`, `AuthSession` | `SeededAccount`: email, role, password if found, source file. `AuthProfile`: the remembered account for one project. `AuthSession`: login outcome, the cookies reused by logged-in checks, and the login `TestResult`. |
+| `BrowserModels.cs` | `BrowserOptions` | Browser crawl configuration: headless mode, page/depth and similar-URL limits, route seeding, navigation timeout, and excluded paths. |
 | `RunModels.cs` | `RunSummary`, `ReportPaths`, `RunComparison`, `RunComparer` | Run header/counter data, exported file paths, and comparison of new, persistent, and fixed failures. Results are matched by source metadata plus result name; only failures becoming passes count as fixed. |
 
 #### Interfaces
@@ -202,6 +219,7 @@ Core has no dependencies. It holds the data shapes and interfaces every other pr
 | File | Interfaces | Purpose |
 |---|---|---|
 | `IAuth.cs` | `ISeederScanner`, `ISecretStore`, `IAuthLogin` | Find candidate seeded accounts, remember project credentials securely, and log in once for authenticated route checks. |
+| `IBrowser.cs` | `IBrowserCheckRunner` | Contract for crawling an app in a real browser and returning per-page results, optionally reusing login cookies. |
 | `IProjectScanner.cs` | `IProjectScanner`, `IToolDetector` | Scan a folder into `ProjectInfo`; detect PHP/Composer/Node/NPM. |
 | `IEnvironment.cs` | `IProcessManager`, `IEnvironmentManager` | Start, track, run and stop processes Guardian owns; start/stop the whole Laravel + Vite environment. |
 | `ILaravel.cs` | `IArtisanRunner`, `INativeTestRunner`, `IRouteScanner` | Run artisan commands; run Pest/PHPUnit; discover routes. |
@@ -286,6 +304,15 @@ Core has no dependencies. It holds the data shapes and interfaces every other pr
 - **Early stop:** after 3 identical server errors in a row, the remaining testable routes are marked `Blocked` (`aborted`) with a "probably share one cause" reason instead of being requested.
 - **Evidence** (failures and warnings only): response headers with cookies and tokens redacted, content type, and a privacy-limited body snippet (HTML reduced to title + plain text, secrets masked, 2000 chars max). Kept in `Metadata` until the run session saves it.
 
+#### `BrowserCheckRunner.cs`
+**Function:** Crawls the running app with Playwright Chromium and records browser-level results.
+- Seeds from `/` and, when enabled, safe non-API GET routes from `route:list`; follows same-origin links up to the configured depth and page cap.
+- Reuses `HttpCheckRunner` skip rules and risky-path tokens. Query strings and fragments are removed to avoid revisiting variations; file-like paths and configured exclusions are skipped.
+- Allows page GET/HEAD/OPTIONS requests and aborts other methods initiated by page scripts. This is a browser crawl, not a form-submission or interaction engine.
+- Captures uncaught page exceptions, console errors, failed requests, and 4xx/5xx responses. Classifies page/server/network issues and stores screenshots for failures, console errors, and lost sessions when capture succeeds.
+- Limits duplicate pages by URL pattern (numeric/GUID segments become `{id}`). Reports page-limit, similar-page, and blocked-write counts as skipped results.
+- Installs Chromium on first use when its executable is missing. If Playwright or Chromium cannot start, returns a `Blocked` engine result.
+
 #### `AuthLogin.cs`, `SeederScanner.cs`, and `SecretStore.cs`
 **Function:** The auth workflow.
 - `SeederScanner` reads `database/seeders` and `database/factories` (read-only) for literal emails, roles (`'role' => ...`, `assignRole(...)`) and passwords (`Hash::make('...')`, `bcrypt('...')`). A factory's literal password is used when a seeder sets none. Accounts are de-duplicated by email.
@@ -303,7 +330,7 @@ Core has no dependencies. It holds the data shapes and interfaces every other pr
 **Function:** SQLite-backed storage for run summaries and structured results.
 - Creates `test_runs` and `test_results` tables and an index by run/source on first use. The database is `%LocalAppData%\LaravelGuardian\guardian.db`.
 - `CreateRunAsync` inserts a run with the project name/path and start/update timestamps.
-- `ReplaceSourceAsync` transactionally replaces all result rows for one source (`environment`, `tests`, `routes`, `auth`, `migrations`, or `http`), stores `TestResult` as JSON alongside queryable summary columns, and recalculates run totals by status.
+- `ReplaceSourceAsync` transactionally replaces all result rows for one source (`environment`, `tests`, `routes`, `auth`, `migrations`, `http`, or `browser`), stores `TestResult` as JSON alongside queryable summary columns, and recalculates run totals by status.
 - Returns old evidence paths so the session layer can remove files that are no longer referenced after a source rerun.
 - Supports loading recent runs (default limit 100), an individual run summary, and all results for a run.
 
@@ -332,13 +359,14 @@ Core has no dependencies. It holds the data shapes and interfaces every other pr
 - `OnExit` synchronously calls `StopAllAsync()` so closing the app kills every Guardian-owned process.
 - Global exception handlers (UI thread, background thread, unobserved tasks) log and show the real error in a message box, which was added after the first crash investigation.
 
-**Registered services:** project/tool scanning, process/environment management, Laravel runners, `IMigrationChecker`, `IHttpCheckRunner`, `ISeederScanner`, `ISecretStore`, `IAuthLogin`, `IRunStore`, `IRunSession`, `IReportExporter`, `MainViewModel`, `ResultsViewModel`, `MainWindow`, and transient `ResultsWindow`. Run services are singletons so both windows share the same session and store.
+**Registered services:** project/tool scanning, process/environment management, Laravel runners, `IMigrationChecker`, `IHttpCheckRunner`, `IBrowserCheckRunner`, `ISeederScanner`, `ISecretStore`, `IAuthLogin`, `IRunStore`, `IRunSession`, `IReportExporter`, `MainViewModel`, `ResultsViewModel`, `MainWindow`, and transient `ResultsWindow`. Run services are singletons so both windows share the same session and store.
 
 #### `MainWindow.xaml` / `MainWindow.xaml.cs`
 **Function:** The single dashboard window.
 - Project path box + **Browse**.
 - Summary line (Laravel version, frontend, Vite, test framework) and detected tool versions.
-- Buttons (in a wrapping row): **Run Tests**, **Discover Routes**, **Check Migrations**, **Run HTTP Checks**, **Cancel**, **Results**, plus **Start Environment** / **Stop** and the "allow tests on the project's database (unsafe)" checkbox. The live base URL is shown next to Start/Stop.
+- Buttons (in a wrapping row): **Run Tests**, **Discover Routes**, **Check Migrations**, **Check Controllers**, **Run HTTP Checks**, **Run Browser Checks**, **Cancel**, **Results**, plus **Start Environment** / **Stop** and the "allow tests on the project's database (unsafe)" checkbox. The live base URL is shown next to Start/Stop.
+- The dashboard uses a dark card layout with shared button, input, dropdown, and checkbox styles, plus detected-tool chips.
 - **Test account row:** dropdown of detected accounts, email box, password box, **Remember**, **Forget**. A `PasswordBox` cannot be bound directly, so the code-behind syncs it with `MainViewModel.AccountPassword` in both directions.
 - **Activity log:** a read-only `TextBox` (real text selection, Ctrl+A/Ctrl+C), **Copy all** (copies selection if any), **Clear**, and auto-scroll that only follows output when you're already at the bottom.
 - Code-behind mirrors the ViewModel's `Activity` collection into the text box. The earlier `ListBox` version crashed (`ItemsControl is inconsistent with its items source`) and was replaced.
@@ -347,6 +375,7 @@ Core has no dependencies. It holds the data shapes and interfaces every other pr
 **Function:** Dedicated run-history and result-inspection window.
 - The left pane lists recent stored runs by project, start time, and status totals. **New run** starts a fresh logical run the next time any results are saved.
 - The main pane provides status filters (`Problems`, `All`, and each status), a result grid (status, source, name, HTTP status, duration, message), and a detail area for the selected result, including exception details, metadata, and evidence path.
+- The window uses the refreshed dark visual style, with status-colored text and lightly tinted rows for failures, warnings, and blocked results.
 - **Refresh** reloads history/results; **Export HTML + JSON** creates the report and opens its HTML file; **Open run folder** opens the selected run directory; **Show evidence file** locates the selected result's evidence JSON.
 - On load, the window refreshes history and selects the active run when available. The dashboard activates the existing Results window instead of opening duplicate windows.
 
@@ -358,17 +387,18 @@ Core has no dependencies. It holds the data shapes and interfaces every other pr
 - Builds selected-result detail text and exposes commands to refresh, start a fresh run, export, open the run directory, and locate evidence.
 - Export/open errors appear in the view's status text.
 
-#### `ViewModels/MainViewModel.cs`, `MainViewModel.Controllers.cs`, and `MainViewModel.Migrations.cs`
-**Function:** All UI state and commands. A `partial` class; the migrations command lives in its own file to keep the main file smaller.
-- **Commands:** Browse, Scan, StartEnvironment, StopEnvironment, RunTests, DiscoverRoutes, CheckControllers, CheckMigrations, RunHttpChecks, CancelRun, OpenResults, ForgetAccount.
+#### `ViewModels/MainViewModel.cs`, `MainViewModel.Browser.cs`, `MainViewModel.Controllers.cs`, and `MainViewModel.Migrations.cs`
+**Function:** UI state and commands split across a `partial` class; browser, controller, and migration commands live in focused partial files.
+- **Commands:** Browse, Scan, StartEnvironment, StopEnvironment, RunTests, DiscoverRoutes, CheckControllers, CheckMigrations, RunHttpChecks, RunBrowserChecks, CancelRun, OpenResults, ForgetAccount.
 - **Enable/disable rules:** Start needs a valid Laravel project and no running environment; Stop needs a running environment; Run Tests / Discover Routes / Check Controllers / Check Migrations need a valid project; Run HTTP Checks needs the environment running; everything is disabled while busy; Cancel is enabled only during a run.
 - **Account state:** `AccountEmail`, `AccountPassword`, `RememberAccount`, `SelectedAccount`, `DetectedAccounts`. Browsing to a project runs the seeder scan and loads a saved account if one exists.
 - **Run HTTP Checks flow:** discover routes if needed → log in once if an email and password are set (only after a successful login is the account saved, if Remember is ticked) → run the checks with that session → log a summary. If the login fails, it continues with guest checks only.
+- **Run Browser Checks flow:** discover routes if needed → attempt the existing one-time login when credentials are set → run the bounded Chromium crawl with the resulting cookies or as a guest → save browser results and log classifications, repeated issues, blocked writes, skips, and screenshot count. Cancellation is checked between pages.
 - **State:** `DiscoveredRoutes`, `LastHttpResults`, the current run session, and a reference to the Results window while open.
 - **Logging:** thread-safe `Log()` marshals to the UI thread and caps the log at 1000 lines. All process output streams in as `[name] line`.
-- **Summaries:** test counts and failing names; route breakdown (GET, API, need auth, parameters, safe-to-check count); HTTP summary with classification breakdown, a "Logged-in checks: N of M" line, a "Stopped early" line when relevant, and a "Not tested (N): ..." line.
+- **Summaries:** test counts and failing names; route breakdown (GET, API, need auth, parameters, safe-to-check count); HTTP classification/skip breakdown; browser classification, repeated-issue and screenshot counts. HTTP and browser summaries include what was not tested.
 - Shared `RunCancellableAsync` wrapper handles busy state, cancellation and error logging.
-- **Persistence:** after environment startup, native tests, route discovery, login, migrations and HTTP checks, `SaveAsync` records source results; save failures are logged without discarding the run's in-memory output.
+- **Persistence:** after environment startup, native tests, route discovery, login, migrations, HTTP checks, and browser checks, `SaveAsync` records source results; save failures are logged without discarding the run's in-memory output.
 
 ---
 
@@ -394,6 +424,12 @@ Discover Routes
    └─ RouteScanner ─► ArtisanRunner ─► ProcessManager.RunAsync("route:list --json")
         └─ RouteInfo list (IsGet / HasParameters / IsApi / RequiresAuth)
 
+Check Controllers
+   └─ ControllerChecker ─► route actions to controller files
+        ├─ resolves App\ namespace mapping from composer.json
+        ├─ checks for missing/commented-out methods
+        └─ warns for inherited or trait-provided methods
+
 Check Migrations
    └─ MigrationChecker ─► ArtisanRunner ─► "migrate:status" (read-only)
         └─ Pass / Warning (pending) / Fail (no table) / Blocked
@@ -407,6 +443,14 @@ Run HTTP Checks
         ├─ logged-in GET checks for protected routes (same session)
         ├─ early stop after 3 identical server errors
         └─ classify ─► TestResult (+ redacted evidence on problems)
+
+Run Browser Checks
+   └─ BrowserCheckRunner (Playwright Chromium)
+        ├─ seed safe GET routes + follow same-origin links
+        ├─ reuse login cookies when login succeeds
+        ├─ block page-triggered non-GET requests
+        ├─ collect browser, network, and server errors (+ screenshots)
+        └─ save results under the browser source
 
 Record results
    └─ MainViewModel.SaveAsync(source, results)
@@ -437,7 +481,7 @@ Stop / close window
 | 2 | Environment Engine | ✅ Done | Process manager, `artisan serve`, `npm run dev`, stdout/stderr capture, readiness checks, owned-process tracking, safe cleanup | Windows Job Object (see limitations), custom service commands, queue workers, `guardian.json` |
 | 3 | Laravel Engine | ✅ Done | Artisan runner, `php artisan test`, Pest/PHPUnit detection, JUnit parsing, `route:list`, unified `TestResult`, migration status check | Laravel log reader, targeted test runs |
 | 4 | HTTP/API Engine | ✅ Done and verified | Safe GET checks, route classification, status/header/body-snippet capture, redirect handling, skip reporting, early stop, logged-in pass | Scenario-based POST/PUT/PATCH/DELETE; API-specific discovery beyond the `api/` prefix; risky public route warning |
-| 5 | Browser Engine (Playwright) | ⬜ Not started | | Everything |
+| 5 | Browser Engine (Playwright) | 🟡 First slice implemented and verified | Bounded Chromium crawl; safe GET-route/link discovery; login-cookie reuse; page, console, network and server-error checks; failure screenshots; write blocking; similar-page sampling | SPA/Inertia login; query-string-aware crawling; cancellation during a page; screenshot access from Results; forms and interactive workflows |
 | 6 | Interactive Testing (forms, auth profiles, authorization) | 🟡 Partly done | Seeded account discovery, encrypted remembered account, one login, logged-in GET checks, role separation (403) seen from the admin role. Verified on `scms`. | Multi-role runs and an allowed/forbidden matrix; forms; safe validation tests; 2FA accounts |
 | 7 | Diagnostics and Reporting | 🟡 First slice delivered | SQLite run/result history, per-result evidence JSON, results grid/details, status filters, prior-run failure comparison, HTML/JSON export with email masking. Results window verified. | Verify export after the masking change; retention/cleanup policy, log correlation, richer evidence navigation and report polish |
 | 8 | Static Analysis | 🟡 Partly done | Route-to-controller check implemented in-app; concept still needs a real-project validation pass. | Model vs migration columns, validation vs save hints, PHPStan/Larastan, Pint, ESLint/TS |
@@ -458,6 +502,7 @@ Stop / close window
 | Run route discovery | ✅ |
 | Run safe HTTP health checks | ✅ verified on `scms` |
 | Run checks with a seeded test account | ✅ verified on `scms` (admin) |
+| Run browser checks | ✅ first slice verified on `scms` (login cookies, known 500 pages, screenshots, deduplication, similar-page sampling) |
 | Show results | ✅ results grid, filters, details, history, export |
 | Stop Guardian-owned processes | ✅ |
 
@@ -465,7 +510,7 @@ Stop / close window
 
 - Orchestrator, not a replacement for Pest/PHPUnit.
 - Honest statuses (`Blocked` and `Skipped` instead of fake passes); an early stop reports the unchecked routes as `Blocked`, not as passed.
-- Safe Mode by default: no state-changing requests, risky GET paths skipped. The only POST is the login request, and only on localhost.
+- Safe Mode by default: no state-changing requests, risky GET paths skipped. Browser pages are restricted to safe navigation and page-triggered writes are blocked; the only POST is the existing login request, and only on localhost.
 - Only Guardian-owned processes are killed.
 - Structured results instead of exceptions leaking into the UI.
 - Reports what was *not* tested, not just what was.
@@ -487,6 +532,7 @@ See section 2 for the current list of bugs found. Background facts from setting 
 | Vite reported ports 5173/5174 in use | Probably orphaned `node.exe` processes from an earlier crash or a second Vite instance. |
 | PHP built-in server: `forking is not supported on this platform` | On Windows `artisan serve` handles one request at a time, so the HTTP engine deliberately sends requests sequentially. Every page takes about 500 ms for this reason. |
 | Pages that return 500 take about 10 s | The app's error page rendering is slow; one reason for the early stop. |
+| Browser checks on `scms` | The browser crawl transferred the login session, found known 500 pages with screenshots, deduplicated repeated console/network issues, and limited similar pages by URL pattern. |
 
 ---
 
@@ -510,7 +556,11 @@ See section 2 for the current list of bugs found. Background facts from setting 
 16. **Test project is empty.** `LaravelGuardian.Tests` still has only the default xUnit placeholder. Good first candidates: `ProjectScanner`, `RouteInfo` helpers, JUnit parsing (including the message cleanup), `HttpCheckRunner` skip rules and classification, `SeederScanner`, `RunComparer`, and `RunStore` source replacement/counts.
 17. **Comparison is name-based.** `RunComparer` keys on source plus result name; duplicate names collapse to the last result and renames appear as unrelated new/fixed results.
 18. **Redirects to another origin are not followed.** If the app forces `APP_URL`, redirects may point at a different server and are reported as `redirect-external`.
-19. **Coverage is still scoped.** Guardian checks GET routes without parameters, as one account at a time. POST routes, routes with parameters, forms, other roles and browser behaviour remain untested; the code-reading checks in section 3 are meant to close part of that gap.
+19. **Coverage is still scoped.** HTTP checks cover safe GET routes without parameters, one account at a time. Browser checks add bounded same-origin page crawling, but do not submit forms, exercise controls, or cover multiple roles; broader coverage remains open.
+20. **Browser login is not general-purpose.** It reuses the existing standard `/login` flow and cookie session; SPA/Inertia-style login is not implemented, so those projects currently fall back to guest pages.
+21. **Browser crawl normalizes URLs.** Query strings are dropped while de-duplicating pages, so distinct query-driven states are not checked. Similar numeric/GUID paths are sampled rather than exhaustively visited.
+22. **Browser cancellation is page-granular.** Cancellation takes effect between pages, not necessarily while an in-progress navigation or page wait is running.
+23. **Screenshot presentation needs confirmation.** Screenshot paths are saved to results/evidence; verify that users can access them directly from the Results window.
 
 ---
 
@@ -518,11 +568,11 @@ See section 2 for the current list of bugs found. Background facts from setting 
 
 1. **Fix the `scms` findings and run again** (your side): add or remove the missing controller methods, remove `Features::registration()`, deal with the `ConfirmPasswordViewResponse` routes, protect or remove `/debug/google-config`. Expect the HTTP run to reach 59 of 59 passed.
 2. **Verify the `UserController::update()` fix by hand:** edit a student with details filled in, save without changes, reopen. The details must still be there.
-3. **Verify the export:** Results → Export HTML + JSON. Emails should be masked and the top note should mention the logged-in routes.
-4. **Decide on the route-to-controller check** (section 3, item 1). It is the cheapest next step and would have found the three missing methods without opening a page.
+3. **Verify report and screenshot access:** Results → Export HTML + JSON should mask emails and mention logged-in routes; also confirm browser screenshots can be opened from Results.
+4. **Validate the route-to-controller check** against a live Laravel project; it is implemented and would have found the missing methods without opening a page.
 5. **Update the stale native tests in `scms`** (`RegistrationTest`, the `/dashboard` redirect, `name` vs first and last name).
 6. **Reliability pass:** Windows Job Object, first tests in `LaravelGuardian.Tests`, run retention.
-7. **Then choose:** more Phase 8 checks (model vs migration columns, validation vs save hints), multi-role runs (Phase 6), or Playwright (Phase 5).
+7. **Choose the next feature slice:** close browser gaps (Phase 5), add more Phase 8 checks (model vs migration columns, validation vs save hints), or implement multi-role runs (Phase 6).
 
 ---
 

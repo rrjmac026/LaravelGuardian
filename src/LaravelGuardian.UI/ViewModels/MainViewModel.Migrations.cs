@@ -12,11 +12,13 @@ public partial class MainViewModel
     // so re-check the button whenever the shared state changes.
     partial void OnIsBusyChanged(bool value)
     {
+        RunBrowserChecksCommand.NotifyCanExecuteChanged();
         CheckMigrationsCommand.NotifyCanExecuteChanged();
         CheckControllersCommand.NotifyCanExecuteChanged();
     }
     partial void OnProjectChanged(ProjectInfo? value)
     {
+        RunBrowserChecksCommand.NotifyCanExecuteChanged();
         CheckMigrationsCommand.NotifyCanExecuteChanged();
         CheckControllersCommand.NotifyCanExecuteChanged();
     }

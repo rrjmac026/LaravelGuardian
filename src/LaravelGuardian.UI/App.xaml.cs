@@ -69,6 +69,7 @@ public partial class App : Application
                 s.AddSingleton<ResultsViewModel>();
                 s.AddTransient<ResultsWindow>();
                 s.AddSingleton<IControllerChecker, ControllerChecker>();
+                s.AddSingleton<IBrowserCheckRunner, BrowserCheckRunner>();
             })
             .Build();
 

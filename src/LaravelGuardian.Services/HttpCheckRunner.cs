@@ -12,14 +12,14 @@ public partial class HttpCheckRunner : IHttpCheckRunner
     private const int MaxRedirects = 5;
     private const int RepeatedErrorLimit = 3;
 
-    private static readonly HashSet<string> DangerousTokens = new(StringComparer.OrdinalIgnoreCase)
+    internal static readonly HashSet<string> DangerousTokens = new(StringComparer.OrdinalIgnoreCase)
     {
         "logout", "signout", "delete", "destroy", "remove", "wipe", "truncate", "purge",
         "seed", "migrate", "artisan", "impersonate", "backup", "export", "download"
     };
 
     // Extra caution once logged in: GET routes with these words often change data.
-    private static readonly HashSet<string> AuthDangerousTokens = new(StringComparer.OrdinalIgnoreCase)
+    internal static readonly HashSet<string> AuthDangerousTokens = new(StringComparer.OrdinalIgnoreCase)
     {
         "approve", "reject", "cancel", "clear", "reset", "revoke", "toggle", "sync", "send",
         "restore", "archive", "activate", "deactivate", "mark", "publish", "unpublish"
@@ -310,7 +310,7 @@ public partial class HttpCheckRunner : IHttpCheckRunner
 
     // ---------- skipping rules (Safe Mode) ----------
 
-    private static (string Reason, string Code)? GetSkipReason(RouteInfo route, HttpCheckOptions o, bool canAuth)
+    internal static (string Reason, string Code)? GetSkipReason(RouteInfo route, HttpCheckOptions o, bool canAuth)
     {
         if (!string.IsNullOrEmpty(route.Domain))
             return ($"Domain-bound route ({route.Domain})", "domain");

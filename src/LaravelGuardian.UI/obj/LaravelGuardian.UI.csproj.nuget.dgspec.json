@@ -393,6 +393,10 @@
               "target": "Package",
               "version": "[10.0.12, )"
             },
+            "Microsoft.Playwright": {
+              "target": "Package",
+              "version": "[1.63.0, )"
+            },
             "System.Security.Cryptography.ProtectedData": {
               "target": "Package",
               "version": "[10.0.12, )"
