@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("LaravelGuardian.Services")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+a57b22a0426089950a1f121bbf9b3df248b287a9")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6da348fe48be2413e7afd64bf3518c648a7bd912")]
 [assembly: System.Reflection.AssemblyProductAttribute("LaravelGuardian.Services")]
 [assembly: System.Reflection.AssemblyTitleAttribute("LaravelGuardian.Services")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

@@ -12,11 +12,11 @@ This document records what has been built so far, what every file does, how the 
 
 | Item | Status |
 |---|---|
-| Current position | **The core pipeline is built and verified on `scms`: project scan, environment boot, native tests, route discovery, migration status, guest and logged-in HTTP checks, run history and report export.** |
-| Verified on a real project | Steps 1-4, the login step (4b) and the migrations check (6). The Results window opens with history and run comparison. |
-| Still to verify | Report export after the email-masking change (Results → Export HTML + JSON). |
+| Current position | **The core pipeline is built and verified on `scms`: project scan, environment boot, native tests, route discovery, migration status, guest and logged-in HTTP checks, controller-method audit, run history and report export.** |
+| Verified on a real project | Steps 1-4, the login step (4b), the migrations check (6), and the controller audit flow are present in the app; the route-level HTTP and migration checks were exercised on `scms`. |
+| Still to verify | The controller audit against a live Laravel project and the report export after the email-masking change (Results → Export HTML + JSON). |
 | MVP (draft §22) | Complete. Every step of the MVP flow exists and has run on `scms`. |
-| Next decision | Build the route-to-controller check (proposed, waiting for a go), then decide between more Phase 8 checks and Playwright (Phase 5). |
+| Next decision | Decide whether to expand the Phase 8 static checks or move to Playwright (Phase 5) after the controller audit is validated on a real project. |
 
 ### Steps completed in this build
 
@@ -30,7 +30,7 @@ This document records what has been built so far, what every file does, how the 
 | 4b | Seeded test accounts: scan seeders/factories, remember the account, log in once, check protected routes | Phase 6 slice | ✅ Done and verified (admin account, 50 logged-in checks) |
 | 5 | Results, run history, evidence and report export | Phase 7 | ✅ Delivered; Results window verified, export masking still to verify |
 | 6 | Migration status check (`php artisan migrate:status`, read-only) | Phase 3 | ✅ Done and verified (14 of 14 migrations ran on `scms`) |
-| 7 | Route-to-controller check | Phase 8 slice | 🔵 Proposed, waiting for a go |
+| 7 | Route-to-controller check | Phase 8 slice | ✅ Implemented in the app; needs a live-project validation pass |
 
 ---
 
@@ -44,6 +44,7 @@ This document records what has been built so far, what every file does, how the 
 | HTTP engine | Early stop: after 3 identical server errors in a row the remaining routes are marked `Blocked` (`aborted`) with a "probably share one cause" message, instead of waiting 10 s per request. |
 | HTTP engine | Better error evidence: quote-aware HTML-to-text, exception class plus message (e.g. `SQLSTATE[HY000] [1049] Unknown database`), shown in the log line. |
 | HTTP engine | Extra words skipped for logged-in GET routes (`approve`, `cancel`, `clear`, `reset`, `send`, `mark`, ...) because those paths often change data. |
+| Static analysis | New route-to-controller audit: `IControllers.cs`, `ControllerChecker.cs`, the dashboard button, and a summary that shows missing or commented-out controller methods. |
 | Code layout | `HttpCheckRunner` split into two partial files: run logic and response analysis. |
 | Auth | `SeederScanner`, `SecretStore` (Windows DPAPI, one account per project folder) and `AuthLogin` (one POST to `/login`, localhost only, never logs the password). Account row in the dashboard (dropdown of detected accounts, email, password, Remember, Forget). |
 | Native tests | `NativeTestRunner.Parse` strips the repeated test name from failure messages. |
@@ -80,7 +81,7 @@ Order is a suggestion. Items marked 🔵 are proposed and need a go before any c
 
 | # | Addition | Phase | Status | What it does |
 |---|---|---|---|---|
-| 1 | **Route-to-controller check** | 8 slice | 🔵 Proposed | Reads every route's action, opens the controller file (via the `App\` mapping in `composer.json`), strips comments, and reports methods that do not exist. Finds bugs like `UserController::create()` without opening a page and also covers POST routes and routes with parameters. Inherited or trait methods are reported as warnings, not failures. Closures, invokable and vendor controllers are skipped. New files: `IControllers.cs`, `ControllerChecker.cs`, `MainViewModel.Controllers.cs`, plus a button and one registration line. |
+| 1 | **Route-to-controller check** | 8 slice | ✅ Implemented in the app | Reads every route's action, opens the controller file (via the `App\` mapping in `composer.json`), strips comments, and reports methods that do not exist. Finds bugs like `UserController::create()` without opening a page and also covers POST routes and routes with parameters. Inherited or trait methods are reported as warnings, not failures. Closures, invokable and vendor controllers are skipped. New files: `IControllers.cs`, `ControllerChecker.cs`, `MainViewModel.Controllers.cs`, plus the dashboard button and DI registration. |
 | 2 | **Model vs migration column check** | 8 slice | ⬜ Planned | Compares columns created by migrations with the fields models and controllers use (`$fillable`, `Student::create([...])`). Finds fields that are saved but have no column, and columns nothing fills. Hints, not proof. |
 | 3 | **Validation vs save mismatch hints** | 8 slice | ⬜ Planned | Flags controllers that save fields their validation rules never allow (the `update()` bug class). |
 | 4 | **Multi-role logged-in checks** | 6 | ⬜ Planned | Run the logged-in pass once per role (admin, counselor, student) using the accounts the seeder scan already finds, and show an allowed/forbidden matrix per route. |
@@ -129,6 +130,7 @@ LaravelGuardian/
 │   │   ├── ResultsWindow.xaml.cs
 │   │   └── ViewModels/
 │   │       ├── MainViewModel.cs
+│   │       ├── MainViewModel.Controllers.cs (Check Controllers command)
 │   │       ├── MainViewModel.Migrations.cs   (Check Migrations command)
 │   │       └── ResultsViewModel.cs
 │   │
@@ -162,6 +164,7 @@ LaravelGuardian/
 │       ├── ArtisanRunner.cs
 │       ├── NativeTestRunner.cs
 │       ├── RouteScanner.cs
+│       ├── ControllerChecker.cs     (checks whether route actions map to real controller methods)
 │       ├── MigrationChecker.cs      (read-only migrate:status)
 │       ├── HttpCheckRunner.cs       (run logic, skip rules, classification)
 │       ├── HttpCheckRunner.Response.cs (body reading, exception detection, evidence snippets)
@@ -204,6 +207,7 @@ Core has no dependencies. It holds the data shapes and interfaces every other pr
 | `ILaravel.cs` | `IArtisanRunner`, `INativeTestRunner`, `IRouteScanner` | Run artisan commands; run Pest/PHPUnit; discover routes. |
 | `IMigrations.cs` | `IMigrationChecker` | Ask Laravel which migrations have run (read-only). |
 | `IHttp.cs` | `IHttpCheckRunner` | Run safe HTTP checks against discovered routes, with an optional logged-in session and a live per-result callback. |
+| `IControllers.cs` | `IControllerChecker` | Check whether each route action resolves to a real controller method and report missing/commented-out methods. |
 | `IReporting.cs` | `IRunStore`, `IRunSession`, `IReportExporter` | Persist run summaries/results, coordinate the active run and per-result evidence files, and export HTML/JSON reports. |
 
 ---
@@ -258,6 +262,14 @@ Core has no dependencies. It holds the data shapes and interfaces every other pr
 - Tolerates PHP warnings printed before the JSON.
 - Splits `GET|HEAD` into methods (dropping HEAD), reads uri, name, action, domain and middleware.
 - Returns a `RouteScanResult`; failures become `Blocked` / `Fail` with the error text.
+
+#### `ControllerChecker.cs`
+**Function:** Audits route actions against the actual project controller files.
+- Reads each route action in the form `App\Http\Controllers\XController@method`.
+- Resolves the `App\` PSR-4 mapping from `composer.json` and checks the controller file for the method.
+- Treats inherited or trait-defined methods as warnings instead of hard failures.
+- Reports missing methods, commented-out copies, and skipped route categories such as closures, invokable controllers, or vendor/framework controllers.
+- Returns a `TestResult` list grouped under the `Controllers` category for dashboard logging and saved results.
 
 #### `MigrationChecker.cs`
 **Function:** Read-only check of which migrations have run, via `php artisan migrate:status --no-ansi` (60 s timeout). Guardian never runs `migrate` itself.
@@ -346,10 +358,10 @@ Core has no dependencies. It holds the data shapes and interfaces every other pr
 - Builds selected-result detail text and exposes commands to refresh, start a fresh run, export, open the run directory, and locate evidence.
 - Export/open errors appear in the view's status text.
 
-#### `ViewModels/MainViewModel.cs` and `MainViewModel.Migrations.cs`
+#### `ViewModels/MainViewModel.cs`, `MainViewModel.Controllers.cs`, and `MainViewModel.Migrations.cs`
 **Function:** All UI state and commands. A `partial` class; the migrations command lives in its own file to keep the main file smaller.
-- **Commands:** Browse, Scan, StartEnvironment, StopEnvironment, RunTests, DiscoverRoutes, CheckMigrations, RunHttpChecks, CancelRun, OpenResults, ForgetAccount.
-- **Enable/disable rules:** Start needs a valid Laravel project and no running environment; Stop needs a running environment; Run Tests / Discover Routes / Check Migrations need a valid project; Run HTTP Checks needs the environment running; everything is disabled while busy; Cancel is enabled only during a run.
+- **Commands:** Browse, Scan, StartEnvironment, StopEnvironment, RunTests, DiscoverRoutes, CheckControllers, CheckMigrations, RunHttpChecks, CancelRun, OpenResults, ForgetAccount.
+- **Enable/disable rules:** Start needs a valid Laravel project and no running environment; Stop needs a running environment; Run Tests / Discover Routes / Check Controllers / Check Migrations need a valid project; Run HTTP Checks needs the environment running; everything is disabled while busy; Cancel is enabled only during a run.
 - **Account state:** `AccountEmail`, `AccountPassword`, `RememberAccount`, `SelectedAccount`, `DetectedAccounts`. Browsing to a project runs the seeder scan and loads a saved account if one exists.
 - **Run HTTP Checks flow:** discover routes if needed → log in once if an email and password are set (only after a successful login is the account saved, if Remember is ticked) → run the checks with that session → log a summary. If the login fails, it continues with guest checks only.
 - **State:** `DiscoveredRoutes`, `LastHttpResults`, the current run session, and a reference to the Results window while open.
@@ -428,7 +440,7 @@ Stop / close window
 | 5 | Browser Engine (Playwright) | ⬜ Not started | | Everything |
 | 6 | Interactive Testing (forms, auth profiles, authorization) | 🟡 Partly done | Seeded account discovery, encrypted remembered account, one login, logged-in GET checks, role separation (403) seen from the admin role. Verified on `scms`. | Multi-role runs and an allowed/forbidden matrix; forms; safe validation tests; 2FA accounts |
 | 7 | Diagnostics and Reporting | 🟡 First slice delivered | SQLite run/result history, per-result evidence JSON, results grid/details, status filters, prior-run failure comparison, HTML/JSON export with email masking. Results window verified. | Verify export after the masking change; retention/cleanup policy, log correlation, richer evidence navigation and report polish |
-| 8 | Static Analysis | ⬜ Not started | | Route-to-controller check (proposed), model vs migration columns, validation vs save hints, PHPStan/Larastan, Pint, ESLint/TS |
+| 8 | Static Analysis | 🟡 Partly done | Route-to-controller check implemented in-app; concept still needs a real-project validation pass. | Model vs migration columns, validation vs save hints, PHPStan/Larastan, Pint, ESLint/TS |
 | 9 | Expectations | ⬜ Not started | | Scenario format and API/browser/DB expectations, baseline snapshots |
 | 10 | Advanced / Future | ⬜ Not started | | CLI, CI mode, AI diagnosis, parallel runs |
 

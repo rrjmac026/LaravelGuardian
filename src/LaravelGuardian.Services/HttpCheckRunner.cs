@@ -227,6 +227,15 @@ public partial class HttpCheckRunner : IHttpCheckRunner
                             $"HTTP {status}{via}: API route returned HTML instead of JSON");
                     }
 
+                    // A guest got a real page from a path that normally belongs behind protection.
+                    if (!authed && hops.Count == 0 && IsRiskyPublic(route.Uri, o))
+                    {
+                        Attach(response, body, contentType);
+                        return Done(TestStatus.Warning, Severity.Medium, "risky-public",
+                            $"HTTP {status}: a guest can open this path, but debug or admin-style routes " +
+                            "should be protected or removed");
+                    }
+
                     if (sw.ElapsedMilliseconds > o.SlowMs)
                         return Done(TestStatus.Warning, Severity.Low, "slow",
                             $"HTTP {status}{via}, but slow ({sw.ElapsedMilliseconds} ms)");
@@ -326,6 +335,15 @@ public partial class HttpCheckRunner : IHttpCheckRunner
             return ("Excluded by pattern", "excluded");
 
         return null;
+    }
+
+    /// True when the path contains a word from HttpCheckOptions.RiskyPublicTokens (whole segments only).
+    private static bool IsRiskyPublic(string uri, HttpCheckOptions o)
+    {
+        if (o.RiskyPublicTokens.Count == 0) return false;
+        var tokens = uri.Split(new[] { '/', '-', '_', '.' }, StringSplitOptions.RemoveEmptyEntries);
+        var risky = new HashSet<string>(o.RiskyPublicTokens, StringComparer.OrdinalIgnoreCase);
+        return tokens.Any(risky.Contains);
     }
 
     private static bool MatchesExclude(string uri, IEnumerable<string> patterns)
