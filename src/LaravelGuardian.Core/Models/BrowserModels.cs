@@ -15,6 +15,10 @@ public class BrowserOptions
     /// Also visit every safe GET route from route:list, not only pages reachable by links.
     public bool SeedFromRoutes { get; set; } = true;
 
+    /// Role the logged-in session belongs to. Added to every result's name and Metadata["role"]
+    /// so the roles' results stay separate in Results and in run comparisons.
+    public string? RoleLabel { get; set; }
+
     /// Wildcard path patterns to never visit, e.g. "admin/reports/*".
     public List<string> ExcludePatterns { get; set; } = new()
     {

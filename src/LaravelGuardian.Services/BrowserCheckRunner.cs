@@ -31,7 +31,17 @@ public sealed class BrowserCheckRunner : IBrowserCheckRunner
             : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LaravelGuardian");
         var shotDir = Path.Combine(shotRoot, "screenshots");
 
-        void Add(TestResult r) { results.Add(r); onResult?.Invoke(r); }
+        void Add(TestResult r)
+        {
+            // Tag every result of a logged-in pass with its role, so passes stay apart.
+            if (authed && !string.IsNullOrWhiteSpace(options.RoleLabel))
+            {
+                r.Metadata["role"] = options.RoleLabel!;
+                r.Name += $" [{options.RoleLabel}]";
+            }
+            results.Add(r);
+            onResult?.Invoke(r);
+        }
 
         IPlaywright? pw = null;
         IBrowser? browser = null;
@@ -300,10 +310,24 @@ public sealed class BrowserCheckRunner : IBrowserCheckRunner
             if (final.PathAndQuery != target.PathAndQuery) result.Metadata["finalUrl"] = final.PathAndQuery;
             if (title.Length > 0) result.Metadata["title"] = title;
 
+            // On a 500 page, read the exception text the app prints (same detector as the HTTP check).
+            string? exType = null, exMessage = null;
+            if (status >= 500)
+            {
+                try
+                {
+                    var html = await page.ContentAsync();
+                    (exType, exMessage) = HttpCheckRunner.DetectException(html, "text/html");
+                }
+                catch { /* the title alone is still reported */ }
+            }
+
             int jsErrors, srvErrors, conErrors, netErrors;
+            string? firstJs;
             lock (gate)
             {
                 jsErrors = exceptions.Count;
+                firstJs = exceptions.FirstOrDefault();
                 srvErrors = serverErrors;
                 conErrors = consoleErrors.Count;
                 netErrors = network.Count;
@@ -325,12 +349,22 @@ public sealed class BrowserCheckRunner : IBrowserCheckRunner
             else if (status == 404)
                 Finish(TestStatus.Fail, Severity.Medium, "not-found", "Page returned 404");
             else if (status >= 500)
-                Finish(TestStatus.Fail, Severity.High, "server-error",
-                    $"HTTP {status}" + (title.Length > 0 ? $": {title}" : ""));
+            {
+                result.ExceptionType = exType;
+                result.ExceptionMessage = exMessage;
+
+                var detail = exType is not null ? $": {exType}" : "";
+                if (!string.IsNullOrWhiteSpace(exMessage))
+                    detail += (exType is not null ? " - " : ": ") + Shorten(exMessage, 160);
+                if (detail.Length == 0 && title.Length > 0) detail = $": {title}";
+
+                Finish(TestStatus.Fail, Severity.High, "server-error", $"HTTP {status}{detail}");
+            }
             else if (authed && IsLoginPath(final) && !IsLoginPath(target))
                 Finish(TestStatus.Warning, Severity.Medium, "session-lost", "Redirected to the login page while logged in");
             else if (jsErrors > 0)
-                Finish(TestStatus.Fail, Severity.Medium, "js-exception", $"{jsErrors} uncaught JavaScript exception(s)");
+                Finish(TestStatus.Fail, Severity.Medium, "js-exception",
+                    $"{jsErrors} uncaught JavaScript exception(s)" + (firstJs is null ? "" : $": {Shorten(firstJs, 200)}"));
             else if (srvErrors > 0)
                 Finish(TestStatus.Fail, Severity.High, "subrequest-server-error",
                     $"{srvErrors} request(s) made by the page returned 5xx");
@@ -350,7 +384,6 @@ public sealed class BrowserCheckRunner : IBrowserCheckRunner
 
             await ShotAsync();
         }
-        
         catch (PlaywrightException ex) when (ex.Message.Contains("ERR_CONNECTION_REFUSED"))
         {
             Finish(TestStatus.Blocked, Severity.High, "unreachable",

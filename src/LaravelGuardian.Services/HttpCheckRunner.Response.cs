@@ -18,6 +18,10 @@ public partial class HttpCheckRunner
 
     private static readonly Regex ExceptionClass = new(
         @"\b(?:[A-Z][A-Za-z0-9_]*\\)+[A-Z][A-Za-z0-9_]*(?:Exception|Error)\b", RegexOptions.Compiled);
+    // Laravel 11/12 error page header as plain text: "TypeError app\Models\X.php :72 message..."
+    // The class name is not namespaced there, so ExceptionClass above does not see it.
+    private static readonly Regex LaravelPage = new(
+        @"\b((?:[A-Z][A-Za-z0-9_]*)?(?:Exception|Error))\s+\S+\.php\s*:\s*\d+\s+(.{1,200})", RegexOptions.Compiled);
     private static readonly Regex Scripts = new(
         @"<(script|style)\b[^>]*>.*?</\1>", RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.IgnoreCase);
     private static readonly Regex Comments = new(
@@ -75,7 +79,8 @@ public partial class HttpCheckRunner
         return Spaces.Replace(html, " ").Trim();
     }
 
-    private static (string? Type, string? Message) DetectException(string body, string contentType)
+    /// Internal so the browser runner can read the exception text of a 500 page the same way.
+    internal static (string? Type, string? Message) DetectException(string body, string contentType)
     {
         if (contentType.Contains("json", StringComparison.OrdinalIgnoreCase))
         {
@@ -111,6 +116,17 @@ public partial class HttpCheckRunner
             var rest = plain[(m.Index + m.Length)..];
             var after = AfterClass.Match(rest);
             if (after.Success) exMessage = after.Groups[1].Value.Trim();
+        }
+
+        // Fallback for the newer Laravel error page (class name without a namespace).
+        if (exType is null || string.IsNullOrWhiteSpace(exMessage))
+        {
+            var lp = LaravelPage.Match(plain);
+            if (lp.Success)
+            {
+                exType ??= lp.Groups[1].Value;
+                if (string.IsNullOrWhiteSpace(exMessage)) exMessage = lp.Groups[2].Value.Trim();
+            }
         }
 
         return (exType, string.IsNullOrWhiteSpace(exMessage) ? null : exMessage);

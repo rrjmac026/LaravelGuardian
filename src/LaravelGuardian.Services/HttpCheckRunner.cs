@@ -26,8 +26,8 @@ public partial class HttpCheckRunner : IHttpCheckRunner
     };
 
     public async Task<IReadOnlyList<TestResult>> RunAsync(
-        string baseUrl, IReadOnlyList<RouteInfo> routes, HttpCheckOptions options,
-        AuthSession? auth = null, Action<TestResult>? onResult = null, CancellationToken ct = default)
+    string baseUrl, IReadOnlyList<RouteInfo> routes, HttpCheckOptions options,
+    AuthSession? auth = null, Action<TestResult>? onResult = null, CancellationToken ct = default)
     {
         var results = new List<TestResult>();
         var baseUri = new Uri(baseUrl);
@@ -38,48 +38,20 @@ public partial class HttpCheckRunner : IHttpCheckRunner
         using var authHttp = canAuth ? CreateClient(options, auth!.Cookies) : null; // logged-in session
 
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var paramRoutes = new List<RouteInfo>();
         int tested = 0;
 
         string? lastSignature = null;
         int repeat = 0;
         string? abortReason = null;
+        bool blocked = false;
 
-        foreach (var route in routes)
+        void Report(TestResult r) { results.Add(r); onResult?.Invoke(r); }
+
+        // Returns true when the whole run must stop (server unreachable).
+        bool AfterCheck(TestResult result)
         {
-            ct.ThrowIfCancellationRequested();
-
-            var skip = GetSkipReason(route, options, canAuth);
-            if (skip is null)
-            {
-                var key = "/" + route.Uri.TrimStart('/');
-                if (!seen.Add(key)) skip = ("Duplicate URL already checked", "duplicate");
-                else if (tested >= options.MaxRoutes) skip = ($"Route limit ({options.MaxRoutes}) reached", "limit");
-            }
-
-            if (skip is not null)
-            {
-                var s = Skipped(route, skip.Value.Reason, skip.Value.Code);
-                results.Add(s);
-                onResult?.Invoke(s);
-                continue;
-            }
-
-            if (abortReason is not null)
-            {
-                var b = NotRun(route, abortReason);
-                results.Add(b);
-                onResult?.Invoke(b);
-                continue;
-            }
-
-            tested++;
-            var authed = route.RequiresAuth && authHttp is not null;
-            var client = authed ? authHttp! : guestHttp;
-            var result = await CheckAsync(client, baseUri, route, options, authed, ct);
-            results.Add(result);
-            onResult?.Invoke(result);
-
-            if (result.Status == TestStatus.Blocked) break; // server unreachable, no point continuing
+            if (result.Status == TestStatus.Blocked) { blocked = true; return true; }
 
             // Same server error several times in a row = probably one shared cause, not many bugs.
             var signature = ErrorSignature(result);
@@ -92,10 +64,112 @@ public partial class HttpCheckRunner : IHttpCheckRunner
                 if (!string.IsNullOrWhiteSpace(result.ExceptionMessage))
                     what += " - " + Shorten(result.ExceptionMessage!, 120);
                 abortReason = $"Not run: {repeat} routes in a row failed with the same error ({what}). " +
-                              "These failures probably share one cause. Fix that first, then run again.";
+                            "These failures probably share one cause. Fix that first, then run again.";
+            }
+            return false;
+        }
+
+        foreach (var route in routes)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            // Extra role passes only look at routes behind login (guest routes were reported by the first pass).
+            if (options.AuthenticatedRoutesOnly && !route.RequiresAuth) continue;
+
+            var skip = GetSkipReason(route, options, canAuth);
+
+            // Parameter routes are tried after the normal pass, once real values have been collected.
+            if (skip is { Code: "parameters" } && options.TestParameterRoutes)
+            {
+                paramRoutes.Add(route);
+                continue;
             }
 
+            if (skip is null)
+            {
+                var key = "/" + route.Uri.TrimStart('/');
+                if (!seen.Add(key)) skip = ("Duplicate URL already checked", "duplicate");
+                else if (tested >= options.MaxRoutes) skip = ($"Route limit ({options.MaxRoutes}) reached", "limit");
+            }
+
+            if (skip is not null)
+            {
+                if (options.AuthenticatedRoutesOnly) continue; // the first pass already reported skips
+                Report(Skipped(route, skip.Value.Reason, skip.Value.Code));
+                continue;
+            }
+
+            if (abortReason is not null)
+            {
+                // Tag the role only when this route was (or would have been) checked logged in, so the report can tell the passes apart.
+                Report(NotRun(route, abortReason, route.RequiresAuth && canAuth ? options.RoleLabel : null));
+                continue;
+            }
+
+            tested++;
+            var authed = route.RequiresAuth && authHttp is not null;
+            var client = authed ? authHttp! : guestHttp;
+            var result = await CheckAsync(client, baseUri, route, options, authed, ct);
+            Report(result);
+
+            if (AfterCheck(result)) break; // server unreachable, no point continuing
             if (options.DelayMs > 0) await Task.Delay(options.DelayMs, ct);
+        }
+
+        // ---------- parameter routes, using real values found on the pages above ----------
+        if (paramRoutes.Count > 0)
+        {
+            var staticPaths = new HashSet<string>(
+                routes.Where(r => !r.HasParameters).Select(r => "/" + r.Uri.TrimStart('/')),
+                StringComparer.OrdinalIgnoreCase);
+
+            foreach (var route in paramRoutes)
+            {
+                ct.ThrowIfCancellationRequested();
+
+                if (blocked || abortReason is not null)
+                {
+                    if (!options.AuthenticatedRoutesOnly)
+                        Report(Skipped(route, "Has route parameters; the run stopped before they could be tried", "parameters"));
+                    continue;
+                }
+
+                var paths = FindConcretePaths(route, options.KnownLinks, staticPaths, options.MaxSamplesPerParameterRoute);
+                if (paths.Count == 0)
+                {
+                    if (!options.AuthenticatedRoutesOnly)
+                        Report(Skipped(route, "Has route parameters; no real value was found in the pages Guardian opened", "parameters"));
+                    continue;
+                }
+
+                foreach (var path in paths)
+                {
+                    var concrete = WithUri(route, path.TrimStart('/'));
+                    var skip = GetSkipReason(concrete, options, canAuth);
+                    if (skip is null)
+                    {
+                        if (!seen.Add(path)) skip = ("Duplicate URL already checked", "duplicate");
+                        else if (tested >= options.MaxRoutes) skip = ($"Route limit ({options.MaxRoutes}) reached", "limit");
+                    }
+
+                    if (skip is not null)
+                    {
+                        if (!options.AuthenticatedRoutesOnly) Report(Skipped(concrete, skip.Value.Reason, skip.Value.Code));
+                        continue;
+                    }
+
+                    tested++;
+                    var authed = concrete.RequiresAuth && authHttp is not null;
+                    var client = authed ? authHttp! : guestHttp;
+                    var result = await CheckAsync(client, baseUri, concrete, options, authed, ct);
+                    result.Metadata["routePattern"] = "/" + route.Uri.TrimStart('/');
+                    Report(result);
+
+                    if (AfterCheck(result)) break;
+                    if (abortReason is not null) break;
+                    if (options.DelayMs > 0) await Task.Delay(options.DelayMs, ct);
+                }
+            }
         }
 
         return results;
@@ -138,7 +212,11 @@ public partial class HttpCheckRunner : IHttpCheckRunner
         };
         if (!string.IsNullOrEmpty(route.Name)) result.Metadata["routeName"] = route.Name!;
         if (!string.IsNullOrEmpty(route.Action)) result.Metadata["action"] = route.Action!;
-        if (authed) result.Metadata["authenticated"] = "true";
+        if (authed)
+        {
+            result.Metadata["authenticated"] = "true";
+            if (!string.IsNullOrWhiteSpace(o.RoleLabel)) result.Metadata["role"] = o.RoleLabel!;
+        }
 
         var sw = Stopwatch.StartNew();
         var hops = new List<string>();
@@ -175,6 +253,7 @@ public partial class HttpCheckRunner : IHttpCheckRunner
                 // ----- redirects -----
                 if (status is >= 300 and < 400)
                 {
+
                     if (response.Headers.Location is not { } location)
                         return Done(TestStatus.Warning, Severity.Low, "redirect-no-location",
                             $"HTTP {status} without a Location header");
@@ -212,6 +291,9 @@ public partial class HttpCheckRunner : IHttpCheckRunner
 
                 if (status is >= 200 and < 300)
                 {
+                    if (contentType.Contains("html", StringComparison.OrdinalIgnoreCase))
+                        CollectLinks(body, new Uri(current), baseUri, o.KnownLinks);
+                        
                     if (contentType.Contains("json", StringComparison.OrdinalIgnoreCase)
                         && !truncated && !string.IsNullOrWhiteSpace(body) && !IsValidJson(body))
                     {
@@ -372,7 +454,7 @@ public partial class HttpCheckRunner : IHttpCheckRunner
         return r;
     }
 
-    private static TestResult NotRun(RouteInfo route, string reason)
+    private static TestResult NotRun(RouteInfo route, string reason, string? role = null)
     {
         var path = route.Uri == "/" ? "/" : "/" + route.Uri.TrimStart('/');
         var r = new TestResult
@@ -384,6 +466,7 @@ public partial class HttpCheckRunner : IHttpCheckRunner
             Message = reason
         };
         r.Metadata["classification"] = "aborted";
+        if (!string.IsNullOrWhiteSpace(role)) r.Metadata["role"] = role!;
         return r;
     }
 

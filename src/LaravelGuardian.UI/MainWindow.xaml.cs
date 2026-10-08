@@ -1,5 +1,6 @@
 ﻿using System.Collections.Specialized;
 using System.Windows;
+using System.Windows.Controls;
 using LaravelGuardian.UI.ViewModels;
 
 namespace LaravelGuardian.UI;
@@ -15,18 +16,21 @@ public partial class MainWindow : Window
         DataContext = vm;
 
         vm.Activity.CollectionChanged += OnActivityChanged;
-
-        // Push a password set by the ViewModel (saved or seeder account) into the PasswordBox.
-        vm.PropertyChanged += (_, e) =>
-        {
-            if (e.PropertyName == nameof(MainViewModel.AccountPassword)
-                && AccountPasswordBox.Password != vm.AccountPassword)
-                AccountPasswordBox.Password = vm.AccountPassword;
-        };
     }
 
-    private void AccountPassword_Changed(object sender, RoutedEventArgs e) =>
-        _vm.AccountPassword = AccountPasswordBox.Password;
+    // A PasswordBox cannot be bound, so each account row syncs its box with RoleAccount.Password here.
+    // Loaded: copy the saved/seeder password into the box. Changed: copy what is typed back to the row.
+    private void RolePassword_Loaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is PasswordBox box && box.DataContext is RoleAccount account && box.Password != account.Password)
+            box.Password = account.Password;
+    }
+
+    private void RolePassword_Changed(object sender, RoutedEventArgs e)
+    {
+        if (sender is PasswordBox box && box.DataContext is RoleAccount account && account.Password != box.Password)
+            account.Password = box.Password;
+    }
 
     private void OnActivityChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {

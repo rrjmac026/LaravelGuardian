@@ -8,6 +8,15 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace LaravelGuardian.UI.ViewModels;
 
+/// One row of the TEST ACCOUNTS list: a role label plus the login used for that role.
+public partial class RoleAccount : ObservableObject
+{
+    [ObservableProperty] private string _role = "";
+    [ObservableProperty] private string _email = "";
+    [ObservableProperty] private string _password = "";
+    [ObservableProperty] private bool _use;
+}
+
 public partial class MainViewModel : ObservableObject
 {
     private readonly IProjectScanner _scanner;
@@ -57,11 +66,8 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _baseUrl = "";
     [ObservableProperty] private bool _allowSharedDatabase;
 
-    // Test account used for the logged-in HTTP checks
-    [ObservableProperty] private string _accountEmail = "";
-    [ObservableProperty] private string _accountPassword = "";
+    // Remember the accounts that logged in successfully (passwords are DPAPI-encrypted)
     [ObservableProperty] private bool _rememberAccount = true;
-    [ObservableProperty] private SeededAccount? _selectedAccount;
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(StartEnvironmentCommand))]
@@ -90,17 +96,10 @@ public partial class MainViewModel : ObservableObject
 
     public ObservableCollection<ToolInfo> DetectedTools { get; } = new();
     public ObservableCollection<string> Activity { get; } = new();
-    public ObservableCollection<SeededAccount> DetectedAccounts { get; } = new();
+    public ObservableCollection<RoleAccount> TestAccounts { get; } = new();
 
     public List<RouteInfo> DiscoveredRoutes { get; private set; } = new();
     public List<TestResult> LastHttpResults { get; private set; } = new();
-
-    partial void OnSelectedAccountChanged(SeededAccount? value)
-    {
-        if (value is null) return;
-        AccountEmail = value.Email;
-        AccountPassword = value.Password ?? "";
-    }
 
     // ---------- Project selection ----------
 
@@ -126,10 +125,7 @@ public partial class MainViewModel : ObservableObject
             Project = await _scanner.ScanAsync(ProjectPath);
             DiscoveredRoutes = new List<RouteInfo>();
 
-            DetectedAccounts.Clear();
-            SelectedAccount = null;
-            AccountEmail = "";
-            AccountPassword = "";
+            TestAccounts.Clear();
 
             if (!Project.IsLaravel)
             {
@@ -167,33 +163,73 @@ public partial class MainViewModel : ObservableObject
         finally { IsBusy = false; }
     }
 
+    // ---------- Test accounts (one row per role) ----------
+
     private async Task LoadAccountsAsync()
     {
         try
         {
-            var saved = _secrets.Load(ProjectPath);
+            var saved = _secrets.LoadAll(ProjectPath);
             var found = await _seeders.ScanAsync(ProjectPath);
 
-            foreach (var a in found) DetectedAccounts.Add(a);
             Log(found.Count > 0
                 ? $"Seeder scan: {found.Count} account(s) found: {string.Join(", ", found.Select(a => a.Display))}"
                 : "Seeder scan: no accounts found in database/seeders");
 
-            if (saved is not null)
+            TestAccounts.Clear();
+
+            // One row per role from the seeders; prefer an account whose password is known.
+            // Accounts without a role get a row with an empty role, unticked.
+            foreach (var group in found.GroupBy(
+                         a => string.IsNullOrWhiteSpace(a.Role) ? "" : a.Role!.Trim(),
+                         StringComparer.OrdinalIgnoreCase))
             {
-                AccountEmail = saved.Email;
-                AccountPassword = saved.Password ?? "";
-                Log($"Saved test account loaded: {saved.Email}" +
-                    (string.IsNullOrEmpty(saved.Password) ? " (password must be typed again)" : ""));
+                var pick = group.OrderByDescending(a => a.Password is not null).First();
+                TestAccounts.Add(new RoleAccount
+                {
+                    Role = group.Key,
+                    Email = pick.Email,
+                    Password = pick.Password ?? "",
+                    Use = group.Key.Length > 0
+                });
             }
-            else if (found.Count > 0)
+
+            // Remembered accounts win over the seeder suggestion for the same email or role.
+            foreach (var s in saved)
             {
-                var pick = found.FirstOrDefault(a => string.Equals(a.Role, "admin", StringComparison.OrdinalIgnoreCase))
-                           ?? found[0];
-                SelectedAccount = pick;
-                Log($"Suggested test account: {pick.Display}" +
-                    (string.IsNullOrEmpty(pick.Password) ? ". Password not found in the seeder, type it below." : ""));
+                var row = TestAccounts.FirstOrDefault(a => a.Email.Equals(s.Email, StringComparison.OrdinalIgnoreCase))
+                          ?? (string.IsNullOrWhiteSpace(s.Role)
+                              ? null
+                              : TestAccounts.FirstOrDefault(a => a.Role.Equals(s.Role, StringComparison.OrdinalIgnoreCase)));
+
+                if (row is null)
+                {
+                    TestAccounts.Add(new RoleAccount
+                    {
+                        Role = s.Role ?? "",
+                        Email = s.Email,
+                        Password = s.Password ?? "",
+                        Use = true
+                    });
+                    continue;
+                }
+
+                row.Email = s.Email;
+                if (!string.IsNullOrWhiteSpace(s.Role)) row.Role = s.Role!;
+                if (!string.IsNullOrEmpty(s.Password)) row.Password = s.Password!;
+                row.Use = true;
             }
+
+            if (TestAccounts.Count == 0)
+            {
+                Log("No test accounts yet. Use + Add account to enter one.");
+                return;
+            }
+
+            Log($"Test accounts: {string.Join(", ", TestAccounts.Select(a => string.IsNullOrWhiteSpace(a.Role) ? a.Email : a.Role))}");
+            var noPassword = TestAccounts.Where(a => a.Use && string.IsNullOrEmpty(a.Password)).ToList();
+            if (noPassword.Count > 0)
+                Log($"  Password not found for: {string.Join(", ", noPassword.Select(RoleLabel))}. Type it in the account list.");
         }
         catch (Exception ex)
         {
@@ -203,16 +239,131 @@ public partial class MainViewModel : ObservableObject
     }
 
     [RelayCommand]
+    private void AddAccount() => TestAccounts.Add(new RoleAccount { Use = true });
+
+    [RelayCommand]
+    private void RemoveAccount(RoleAccount? account)
+    {
+        if (account is null) return;
+        TestAccounts.Remove(account);
+
+        var email = account.Email.Trim();
+        if (email.Length == 0 || string.IsNullOrWhiteSpace(ProjectPath)) return;
+        try { _secrets.Delete(ProjectPath, email); }
+        catch (Exception ex) { Log($"Could not remove the saved account: {ex.Message}"); }
+    }
+
+    [RelayCommand]
     private void ForgetAccount()
     {
         if (string.IsNullOrWhiteSpace(ProjectPath)) return;
         try { _secrets.Delete(ProjectPath); }
-        catch (Exception ex) { Log($"Could not remove the saved account: {ex.Message}"); return; }
+        catch (Exception ex) { Log($"Could not remove the saved accounts: {ex.Message}"); return; }
 
-        SelectedAccount = null;
-        AccountEmail = "";
-        AccountPassword = "";
-        Log("Saved test account removed for this project.");
+        foreach (var a in TestAccounts) a.Password = "";
+        Log("Saved test accounts removed for this project (passwords cleared from the list).");
+    }
+
+    private static string RoleLabel(RoleAccount a) =>
+        string.IsNullOrWhiteSpace(a.Role) ? a.Email.Trim() : a.Role.Trim();
+
+    private List<RoleAccount> UsableAccounts() =>
+        TestAccounts.Where(a => a.Use && a.Email.Trim().Length > 0 && !string.IsNullOrEmpty(a.Password)).ToList();
+
+    /// The account the browser crawl logs in with until it gets its own per-role pass: admin first.
+    private RoleAccount? PrimaryAccount()
+    {
+        var rows = UsableAccounts();
+        return rows.FirstOrDefault(a => a.Role.Trim().Equals("admin", StringComparison.OrdinalIgnoreCase))
+               ?? rows.FirstOrDefault();
+    }
+
+    private const int MaxFailedLogins = 3;
+
+    private static readonly HashSet<string> SystemicLoginFailures = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "bad-url", "not-local", "login-page", "no-csrf", "csrf-expired",
+        "throttled", "unreachable", "timeout", "redirect-loop", "no-location"
+    };
+
+
+    /// One login per ticked role (the only POSTs Guardian sends). Returns the sessions that worked.
+    private async Task<List<AuthSession>> LoginAllRolesAsync(string baseUrl, CancellationToken ct)
+    {
+        var sessions = new List<AuthSession>();
+        var rows = UsableAccounts();
+        if (rows.Count == 0)
+        {
+            Log("No test account ticked (with email and password), so routes that need login will not be tested.");
+            return sessions;
+        }
+
+        var loginResults = new List<TestResult>();
+        var usedLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var failures = 0;
+        string? stopReason = null;
+        var stoppedAt = rows.Count;
+
+        for (int i = 0; i < rows.Count; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var row = rows[i];
+            var email = row.Email.Trim();
+            var label = RoleLabel(row);
+            if (!usedLabels.Add(label)) { label = $"{label} ({email})"; usedLabels.Add(label); }
+
+            Log($"Logging in as {email} [{label}] (the only POST Guardian sends)...");
+            var attempt = await _login.LoginAsync(baseUrl, email, row.Password, ct);
+            attempt.Role = label;
+            attempt.Result.Name = $"Login ({label})";
+            attempt.Result.Metadata["role"] = label;
+            loginResults.Add(attempt.Result);
+
+            Log($"  {attempt.Result.Status.ToString().ToUpper(),-8} {attempt.Result.Name}: {attempt.Message}");
+
+            if (attempt.Success)
+            {
+                sessions.Add(attempt);
+                if (RememberAccount)
+                {
+                    try { _secrets.Save(ProjectPath, email, row.Role, row.Password); }
+                    catch (Exception ex) { Log($"Could not save the account: {ex.Message}"); }
+                }
+                continue;
+            }
+
+            var cls = attempt.Result.Metadata.GetValueOrDefault("classification", "");
+            if (SystemicLoginFailures.Contains(cls))
+            {
+                stopReason = $"The login problem is not about this account ({cls}), so other accounts would fail the same way.";
+                stoppedAt = i + 1;
+                break;
+            }
+
+            failures++;
+            Log($"  Skipping role {label}. ({failures} of {MaxFailedLogins} failed logins allowed)");
+            if (failures >= MaxFailedLogins)
+            {
+                stopReason = $"{failures} logins failed. Guardian stops here to avoid locking accounts or hitting rate limits.";
+                stoppedAt = i + 1;
+                break;
+            }
+        }
+
+        if (stopReason is not null)
+        {
+            var untried = rows.Skip(stoppedAt).Select(RoleLabel).ToList();
+            Log($"Stopped trying logins. {stopReason}");
+            if (untried.Count > 0) Log($"  Not tried: {string.Join(", ", untried)}");
+            Log(sessions.Count == 0
+                ? "  No login worked. The seeder passwords are often not the real ones. Type the correct email/password " +
+                "in the TEST ACCOUNTS list (or use + Add account), then run again. Continuing with guest checks only."
+                : $"  Continuing with the {sessions.Count} role(s) that did log in. Fix or add the others in TEST ACCOUNTS and run again.");
+        }
+
+        await SaveAsync("auth", loginResults);
+        return sessions;
     }
 
     // ---------- Environment ----------
@@ -333,43 +484,18 @@ public partial class MainViewModel : ObservableObject
                 if (!await DiscoverRoutesCoreAsync(project, ct)) return;
             }
 
-            // One login (the only POST), then GET-only checks with that session.
-            AuthSession? session = null;
-            var email = AccountEmail.Trim();
-            if (email.Length > 0 && !string.IsNullOrEmpty(AccountPassword))
-            {
-                Log($"Logging in as {email} (the only POST Guardian sends)...");
-                var attempt = await _login.LoginAsync(baseUrl, email, AccountPassword, ct);
-                Log($"  {attempt.Result.Status.ToString().ToUpper(),-8} {attempt.Result.Name}: {attempt.Message}");
-                await SaveAsync("auth", new[] { attempt.Result });
-
-                if (attempt.Success)
-                {
-                    session = attempt;
-                    if (RememberAccount)
-                    {
-                        try { _secrets.Save(ProjectPath, email, AccountPassword); }
-                        catch (Exception ex) { Log($"Could not save the account: {ex.Message}"); }
-                    }
-                }
-                else
-                {
-                    Log("  Continuing with guest checks only.");
-                }
-            }
-            else
-            {
-                Log("No test account set, so routes that need login will not be tested.");
-            }
+            // One login per ticked role, then GET-only checks with each session.
+            var sessions = await LoginAllRolesAsync(baseUrl, ct);
 
             Log($"Running HTTP checks against {baseUrl} (GET only, one request at a time)...");
 
-            var results = await _http.RunAsync(baseUrl, DiscoveredRoutes, new HttpCheckOptions(), session, r =>
+            void Show(TestResult r)
             {
                 if (r.Status == TestStatus.Skipped) return;
                 if (r.Metadata.GetValueOrDefault("classification") == "aborted") return; // summarized at the end
 
-                Log($"  {r.Status.ToString().ToUpper(),-8} {r.Name}  " +
+                var role = r.Metadata.TryGetValue("role", out var rl) && !string.IsNullOrWhiteSpace(rl) ? $" [{rl}]" : "";
+                Log($"  {r.Status.ToString().ToUpper(),-8} {r.Name}{role}  " +
                     $"[{r.HttpStatus?.ToString() ?? "-"}]  {r.Duration.TotalMilliseconds:0} ms  {r.Message}");
 
                 // The message already carries the detected exception detail; show the raw
@@ -379,19 +505,114 @@ public partial class MainViewModel : ObservableObject
                     && r.Metadata.TryGetValue("bodySnippet", out var snippet)
                     && !string.IsNullOrWhiteSpace(snippet))
                     Log("      " + (snippet.Length > 300 ? snippet[..300] + "..." : snippet));
-            }, ct);
+            }
 
-            LastHttpResults = results.ToList();
-            await SaveAsync("http", LastHttpResults);
-            LogHttpSummary(results);
+            var all = new List<TestResult>();
+            var knownLinks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            if (sessions.Count == 0)
+            {
+                all.AddRange(await _http.RunAsync(baseUrl, DiscoveredRoutes,
+                    new HttpCheckOptions { KnownLinks = knownLinks }, null, Show, ct));
+            }
+            else
+            {
+                // First pass: guests + the first role. Later passes: only the routes behind login.
+                for (int i = 0; i < sessions.Count; i++)
+                {
+                    var s = sessions[i];
+                    Log($"--- Role: {s.Role} ---");
+                    var options = new HttpCheckOptions
+                    {
+                        RoleLabel = s.Role,
+                        AuthenticatedRoutesOnly = i > 0,
+                        KnownLinks = knownLinks
+                    };
+                    all.AddRange(await _http.RunAsync(baseUrl, DiscoveredRoutes, options, s, Show, ct));
+                }
+
+                if (sessions.Count >= 2)
+                {
+                    var matrix = RoleMatrix.Build(all);
+                    var issues = matrix.FindIssues();
+                    LogRoleMatrix(matrix, issues);
+                    all.AddRange(issues);
+                }
+            }
+            if (sessions.Count < 2)
+                {
+                    var fixedPaths = DiscoveredRoutes
+                        .Where(r => !r.HasParameters)
+                        .Select(r => "/" + r.Uri.TrimStart('/'))
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    var idLike = knownLinks.Where(p => !fixedPaths.Contains(p)).OrderBy(p => p).ToList();
+                    Log($"Links seen on pages: {knownLinks.Count} total, {idLike.Count} not matching a fixed route");
+                    foreach (var p in idLike.Take(30)) Log($"    {p}");
+                    if (idLike.Count > 30) Log($"    ...and {idLike.Count - 30} more");
+
+                    var noValue = all
+                        .Where(r => r.Status == TestStatus.Skipped && r.Metadata.GetValueOrDefault("skipReason") == "parameters")
+                        .Select(r => r.Name).Distinct().OrderBy(n => n).ToList();
+                    if (noValue.Count > 0)
+                        Log($"Parameter routes with no value ({noValue.Count}): {string.Join(", ", noValue)}");
+                    var msg = sessions.Count == 0
+                        ? "No role was logged in, so authorization was not checked. Only guest access was tested."
+                        : $"Only one role ({sessions[0].Role}) was tested, so authorization was not checked. " +
+                        "Role separation (who may open what) needs at least two roles. Add another account in TEST ACCOUNTS.";
+
+                    Log($"WARNING  {msg}");
+
+                    var warn = new TestResult
+                    {
+                        Category = "Authorization",
+                        Name = "Role access matrix",
+                        Status = TestStatus.Warning,
+                        Severity = Severity.Low,
+                        Expected = "At least two logged-in roles to compare route access",
+                        Actual = sessions.Count == 0 ? "0 roles" : "1 role",
+                        Message = msg
+                    };
+                    warn.Metadata["classification"] = "single-role";
+                    all.Add(warn);
+                }
+
+            LastHttpResults = all;
+            await SaveAsync("http", all);
+            LogHttpSummary(all);
         });
+    }
+
+    private void LogRoleMatrix(RoleMatrix matrix, IReadOnlyList<TestResult> issues)
+    {
+        if (matrix.IsEmpty) return;
+
+        Log($"Role access matrix: {matrix.Rows.Count} route(s) across {matrix.Roles.Count} role(s)");
+        foreach (var role in matrix.Roles)
+        {
+            int Count(string cell) => matrix.Rows.Count(r => r.Cells.GetValueOrDefault(role) == cell);
+            Log($"  {role}: {Count(RoleMatrix.Allowed)} allowed, {Count(RoleMatrix.Forbidden)} forbidden, " +
+                $"{Count(RoleMatrix.Error)} error, {Count(RoleMatrix.Other)} other");
+        }
+
+        if (issues.Count == 0)
+        {
+            Log("  No access hints found.");
+            return;
+        }
+
+        Log($"  Access hints ({issues.Count}):");
+        foreach (var i in issues.Take(25)) Log($"    WARNING  {i.Message}");
+        if (issues.Count > 25) Log($"    ...and {issues.Count - 25} more (see Results)");
     }
 
     private void LogHttpSummary(IReadOnlyList<TestResult> results)
     {
         static bool IsAborted(TestResult r) => r.Metadata.GetValueOrDefault("classification") == "aborted";
 
-        var tested = results.Where(r => r.Status != TestStatus.Skipped && !IsAborted(r)).ToList();
+        // Role access hints are listed separately above, not counted as route checks.
+        var tested = results
+            .Where(r => r.Status != TestStatus.Skipped && !IsAborted(r) && r.Category != "Authorization")
+            .ToList();
         var notRun = results.Where(IsAborted).ToList();
         int Count(TestStatus s) => tested.Count(r => r.Status == s);
 
@@ -405,17 +626,32 @@ public partial class MainViewModel : ObservableObject
             .Select(g => $"{g.Count()} {g.Key}");
         if (tested.Count > 0) Log("  Breakdown: " + string.Join(", ", byClass));
 
-        var loggedIn = tested.Count(r => r.Metadata.GetValueOrDefault("authenticated") == "true");
-        if (loggedIn > 0)
-            Log($"  Logged-in checks: {loggedIn} of {tested.Count} (the rest were guest checks)");
+        var loggedIn = tested.Where(r => r.Metadata.GetValueOrDefault("authenticated") == "true").ToList();
+        if (loggedIn.Count > 0)
+        {
+            var perRole = loggedIn
+                .GroupBy(r => r.Metadata.GetValueOrDefault("role", "?"))
+                .Select(g => $"{g.Key}: {g.Count()}");
+            Log($"  Logged-in checks: {loggedIn.Count} ({string.Join(", ", perRole)}); the rest were guest checks");
+        }
+
+        var withValues = tested.Count(r => r.Metadata.ContainsKey("routePattern"));
+        if (withValues > 0) Log($"  Parameter routes checked with real values: {withValues}");
 
         if (notRun.Count > 0)
-            Log($"  Stopped early, {notRun.Count} more route(s) not run. {notRun[0].Message}");
+        {
+            Log($"  Stopped early, {notRun.Count} route(s) not run. {notRun[0].Message}");
+            foreach (var g in notRun.GroupBy(r => r.Metadata.GetValueOrDefault("role", "")))
+            {
+                var who = string.IsNullOrWhiteSpace(g.Key) ? "" : $"[{g.Key}] ";
+                Log($"    Not run {who}({g.Count()}): {string.Join(", ", g.Select(r => r.Name))}");
+            }
+        }
 
         static string Label(string code) => code switch
         {
             "auth" => "need auth (no login used)",
-            "parameters" => "have parameters",
+            "parameters" => "have parameters (no real value found)",
             "method" => "non-GET (Safe Mode)",
             "excluded" => "excluded as risky",
             "domain" => "domain-bound",

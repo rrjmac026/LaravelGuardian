@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Data;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
@@ -23,6 +24,7 @@ public sealed class ResultRow
     public bool HasScreenshot { get; }
     public string Status => Result.Status.ToString();
     public string Source => Result.Metadata.GetValueOrDefault("source", "");
+    public string Role => Result.Metadata.GetValueOrDefault("role", "");
     public string Name => Result.Name;
     public string Http => Result.HttpStatus?.ToString() ?? "-";
     public int Ms => (int)Result.Duration.TotalMilliseconds;
@@ -52,6 +54,12 @@ public partial class ResultsViewModel : ObservableObject
     public string[] Filters { get; } =
         { "Problems", "All", "Pass", "Fail", "Warning", "Blocked", "Skipped", "With screenshot" };
 
+    private const string AllRoles = "All roles";
+
+    /// "All roles" plus every role label found in the selected run.
+    public ObservableCollection<string> Roles { get; } = new() { AllRoles };
+
+    [ObservableProperty] private string _roleFilter = AllRoles;
     [ObservableProperty] private string _filter = "Problems";
     [ObservableProperty] private RunSummary? _selectedRun;
     [ObservableProperty] private ResultRow? _selectedRow;
@@ -61,6 +69,7 @@ public partial class ResultsViewModel : ObservableObject
 
     partial void OnSelectedRunChanged(RunSummary? value) => _ = LoadRunAsync(value);
     partial void OnFilterChanged(string value) => ApplyFilter();
+    partial void OnRoleFilterChanged(string value) => ApplyFilter();
     partial void OnSelectedRowChanged(ResultRow? value)
     {
         Detail = value is null ? "" : BuildDetail(value);
@@ -148,10 +157,16 @@ public partial class ResultsViewModel : ObservableObject
         Comparison = "";
         _all = new List<TestResult>();
         _shots.Clear();
+        MatrixView = null;
+        MatrixSummary = "";
+        HasMatrix = false;
+        ShowMatrix = false;
         if (run is null) return;
 
         _all = (await _store.GetResultsAsync(run.Id)).ToList();
         IndexScreenshots(run);
+        LoadRoles();
+        LoadMatrix();
         ApplyFilter();
 
         var previous = Runs
@@ -176,6 +191,85 @@ public partial class ResultsViewModel : ObservableObject
         Comparison = sb.ToString();
     }
 
+    // ---------- role matrix ----------
+
+    /// Route x role table for the selected run (null when the run has no per-role results).
+    [ObservableProperty] private DataView? _matrixView;
+    [ObservableProperty] private string _matrixSummary = "";
+    [ObservableProperty] private bool _hasMatrix;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(MatrixButtonText))]
+    private bool _showMatrix;
+
+    public string MatrixButtonText => ShowMatrix ? "Results list" : "Role matrix";
+
+    partial void OnHasMatrixChanged(bool value) => ToggleMatrixCommand.NotifyCanExecuteChanged();
+
+    private bool CanToggleMatrix() => HasMatrix;
+
+    [RelayCommand(CanExecute = nameof(CanToggleMatrix))]
+    private void ToggleMatrix() => ShowMatrix = !ShowMatrix;
+
+    private void LoadMatrix()
+    {
+        var matrix = RoleMatrix.Build(_all);
+        if (matrix.IsEmpty) return;
+
+        // Column names are fixed ("route", "r0", "r1"...) because a role label may contain characters
+        // that break WPF bindings; the real label travels in Caption and becomes the header.
+        var table = new DataTable();
+        table.Columns.Add("route", typeof(string)).Caption = "Route";
+        for (int i = 0; i < matrix.Roles.Count; i++)
+            table.Columns.Add($"r{i}", typeof(string)).Caption = matrix.Roles[i];
+
+        static string Text(string? cell) => cell switch
+        {
+            RoleMatrix.Allowed => "allowed",
+            RoleMatrix.Forbidden => "forbidden",
+            RoleMatrix.Error => "ERROR",
+            RoleMatrix.Other => "other",
+            _ => "-"
+        };
+
+        // Rows with an error first, then alphabetical.
+        var rows = matrix.Rows
+            .OrderByDescending(r => r.Cells.Values.Any(c => c == RoleMatrix.Error))
+            .ThenBy(r => r.Route, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        foreach (var row in rows)
+        {
+            var values = new object[matrix.Roles.Count + 1];
+            values[0] = row.Route;
+            for (int i = 0; i < matrix.Roles.Count; i++)
+                values[i + 1] = Text(row.Cells.GetValueOrDefault(matrix.Roles[i]));
+            table.Rows.Add(values);
+        }
+
+        var errorRows = rows.Count(r => r.Cells.Values.Any(c => c == RoleMatrix.Error));
+        MatrixSummary = $"{matrix.Rows.Count} routes x {matrix.Roles.Count} role(s), {errorRows} with errors. " +
+                        "Shows what each role could open, not what it should be able to open.";
+        MatrixView = table.DefaultView;
+        HasMatrix = true;
+    }
+
+    /// Refills the role dropdown from the loaded results and resets it to "All roles".
+    private void LoadRoles()
+    {
+        var roles = _all
+            .Select(r => r.Metadata.GetValueOrDefault("role", ""))
+            .Where(r => !string.IsNullOrWhiteSpace(r))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(r => r, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        Roles.Clear();
+        Roles.Add(AllRoles);
+        foreach (var r in roles) Roles.Add(r);
+        RoleFilter = AllRoles;
+    }
+
     private void ApplyFilter()
     {
         Rows.Clear();
@@ -186,6 +280,11 @@ public partial class ResultsViewModel : ObservableObject
             "With screenshot" => _all.Where(HasScreenshot),
             _ => _all.Where(r => r.Status.ToString() == Filter)
         };
+
+        // The dropdown briefly holds null while its list is rebuilt; treat that as "All roles".
+        if (!string.IsNullOrEmpty(RoleFilter) && RoleFilter != AllRoles)
+            q = q.Where(r => string.Equals(r.Metadata.GetValueOrDefault("role", ""), RoleFilter,
+                StringComparison.OrdinalIgnoreCase));
 
         // Failures first; OrderBy is stable, so the original order is kept inside each group.
         foreach (var r in q.OrderBy(r => Rank(r.Status))) Rows.Add(new ResultRow(r, HasScreenshot(r)));

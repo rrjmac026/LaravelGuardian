@@ -62,7 +62,10 @@ public sealed class ReportExporter : IReportExporter
         .t-Fail{background:#c0392b}.t-Warning{background:#b9770e}.t-Blocked{background:#5b4b9a}.t-Pass{background:#1e8449}
         pre{background:#f0f1f4;padding:8px;border-radius:4px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:12px}
         table{border-collapse:collapse;width:100%;background:#fff} td,th{padding:5px 10px;border-bottom:1px solid #eee;text-align:left;font-size:13px}
-        .note{background:#fff8e1;border-left:4px solid #f0b429;padding:8px 12px;font-size:13px;margin:12px 0}";
+        .note{background:#fff8e1;border-left:4px solid #f0b429;padding:8px 12px;font-size:13px;margin:12px 0}
+        .matrix td,.matrix th{text-align:center} .matrix td:first-child,.matrix th:first-child{text-align:left}
+        .matrix td.allowed{background:#d5f5e3;color:#1e8449}.matrix td.forbidden{background:#eceff1;color:#546e7a}
+        .matrix td.error{background:#f9d6d5;color:#c0392b;font-weight:600}.matrix td.other{background:#fff3cd;color:#8a6d00}";
 
     private static string Label(string code) => code switch
     {
@@ -78,6 +81,43 @@ public sealed class ReportExporter : IReportExporter
         "vendor" => "vendor or framework controllers",
         _ => code
     };
+
+    /// Route x role table: what each role got when it opened each route behind login.
+    private static void AppendMatrix(StringBuilder sb, IReadOnlyList<TestResult> results)
+    {
+        var matrix = RoleMatrix.Build(results);
+        if (matrix.IsEmpty) return;
+
+        static string E(string? s) => WebUtility.HtmlEncode(s ?? "");
+
+        sb.Append("<h2>Role access matrix (").Append(matrix.Rows.Count).Append(" routes, ")
+          .Append(matrix.Roles.Count).Append(" role(s))</h2>");
+        sb.Append("<div class=\"note\">Shows what each role was able to open, not what it should be able to open. " +
+                  "Check the rows with ERROR, and the routes every role can reach.</div>");
+        sb.Append("<details open><summary>Show matrix</summary><div><table class=\"matrix\"><tr><th>Route</th>");
+        foreach (var role in matrix.Roles) sb.Append("<th>").Append(E(role)).Append("</th>");
+        sb.Append("</tr>");
+
+        foreach (var row in matrix.Rows)
+        {
+            sb.Append("<tr><td>").Append(E(row.Route)).Append("</td>");
+            foreach (var role in matrix.Roles)
+            {
+                var cell = row.Cells.GetValueOrDefault(role);
+                var text = cell switch
+                {
+                    RoleMatrix.Allowed => "allowed",
+                    RoleMatrix.Forbidden => "forbidden",
+                    RoleMatrix.Error => "ERROR",
+                    RoleMatrix.Other => "other",
+                    _ => "-"
+                };
+                sb.Append("<td class=\"").Append(cell ?? "").Append("\">").Append(text).Append("</td>");
+            }
+            sb.Append("</tr>");
+        }
+        sb.Append("</table></div></details>");
+    }
 
     private static string BuildHtml(RunSummary run, IReadOnlyList<TestResult> results)
     {
@@ -104,15 +144,24 @@ public sealed class ReportExporter : IReportExporter
         Card("", "Skipped", run.Skipped);
         sb.Append("</div>");
 
-        var loggedIn = results.Count(r => r.Metadata.GetValueOrDefault("authenticated") == "true");
+        var loggedInResults = results.Where(r => r.Metadata.GetValueOrDefault("authenticated") == "true").ToList();
+        var loggedIn = loggedInResults.Count;
+        var roleCount = loggedInResults
+            .Select(r => r.Metadata.GetValueOrDefault("role", ""))
+            .Where(r => !string.IsNullOrWhiteSpace(r))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
         var scope = loggedIn > 0
-            ? $"HTTP checks are GET only (Safe Mode). {loggedIn} route(s) were checked with a logged-in test account; " +
-              "routes that belong to other roles or need route parameters are not covered. "
+            ? $"HTTP checks are GET only (Safe Mode). {loggedIn} route check(s) were made with a logged-in test account" +
+              (roleCount > 0 ? $" across {roleCount} role(s)" : "") + "; " +
+              "roles that were not tested and routes that need route parameters are not covered. "
             : "HTTP checks run as a guest in Safe Mode (GET only). Routes behind authentication were not covered " +
               "because no logged-in test account was used. ";
         sb.Append("<div class=\"note\">").Append(E(scope))
           .Append("Email addresses are masked in this report. Other evidence is redacted on a best-effort basis; " +
                   "review it before sharing.</div>");
+
+        AppendMatrix(sb, results);
 
         // Problems
         var problems = results
@@ -132,6 +181,8 @@ public sealed class ReportExporter : IReportExporter
                 sb.Append("<details><summary><span class=\"tag t-").Append(r.Status).Append("\">")
                   .Append(r.Status.ToString().ToUpper()).Append("</span>")
                   .Append(E(r.Name));
+                if (r.Metadata.TryGetValue("role", out var roleLabel) && !string.IsNullOrWhiteSpace(roleLabel))
+                    sb.Append(" [").Append(E(roleLabel)).Append(']');
                 if (r.HttpStatus is not null) sb.Append(" · HTTP ").Append(r.HttpStatus);
                 if (!string.IsNullOrWhiteSpace(r.Message)) sb.Append(" — ").Append(E(r.Message));
                 sb.Append("</summary><div>");

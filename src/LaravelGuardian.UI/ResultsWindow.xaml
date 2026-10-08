@@ -200,9 +200,61 @@
         </Style>
 
         <!-- Long text: trim with an ellipsis and show the full text on hover -->
+       <BooleanToVisibilityConverter x:Key="B2V"/>
+
         <Style x:Key="TrimText" TargetType="TextBlock">
             <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
             <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+        </Style>
+
+        <!-- Results grid card: hidden while the matrix is shown -->
+        <Style x:Key="CardResults" TargetType="Border" BasedOn="{StaticResource Card}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding ShowMatrix}" Value="True">
+                    <Setter Property="Visibility" Value="Collapsed"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="MatrixRow" TargetType="DataGridRow">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="{StaticResource Surface0}"/></Trigger>
+                <Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="{StaticResource Surface1}"/></Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="MatrixCell" TargetType="DataGridCell">
+            <Setter Property="Foreground" Value="{StaticResource Text}"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="DataGridCell">
+                        <Border Background="{TemplateBinding Background}" Padding="12,8">
+                            <ContentPresenter VerticalAlignment="Center"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding RelativeSource={RelativeSource Self}, Path=Content.Text}" Value="allowed">
+                    <Setter Property="Background" Value="#26A6E3A1"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding RelativeSource={RelativeSource Self}, Path=Content.Text}" Value="forbidden">
+                    <Setter Property="Background" Value="#1AA6ADC8"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding RelativeSource={RelativeSource Self}, Path=Content.Text}" Value="ERROR">
+                    <Setter Property="Background" Value="#40F38BA8"/>
+                    <Setter Property="Foreground" Value="{StaticResource Red}"/>
+                    <Setter Property="FontWeight" Value="SemiBold"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding RelativeSource={RelativeSource Self}, Path=Content.Text}" Value="other">
+                    <Setter Property="Background" Value="#26F9E2AF"/>
+                </DataTrigger>
+            </Style.Triggers>
         </Style>
     </Window.Resources>
 
@@ -260,11 +312,16 @@
                     <TextBlock Text="Show" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="{StaticResource Subtext}"/>
                     <ComboBox ItemsSource="{Binding Filters}" SelectedItem="{Binding Filter}"
                               Style="{StaticResource Combo}" Width="130"/>
+                    <ComboBox ItemsSource="{Binding Roles}" SelectedItem="{Binding RoleFilter}"
+                              Style="{StaticResource Combo}" Width="130" Margin="8,0,0,0"
+                              ToolTip="Show results for one role only"/>
                     <Button Content="⟳  Refresh" Style="{StaticResource Btn}" Margin="10,0,0,0"
                             Command="{Binding RefreshCommand}"/>
                 </StackPanel>
 
                 <WrapPanel Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="12,0,0,0">
+                    <Button Content="{Binding MatrixButtonText}" Style="{StaticResource Btn}" Margin="8,0,0,6"
+                            Command="{Binding ToggleMatrixCommand}"/>
                     <Button Content="Open screenshot" Style="{StaticResource Btn}" Margin="8,0,0,6"
                             Command="{Binding OpenScreenshotCommand}"/>
                     <Button Content="Show evidence file" Style="{StaticResource Btn}" Margin="8,0,0,6"
@@ -282,7 +339,7 @@
             </Border>
 
             <!-- Results grid -->
-            <Border Grid.Row="2" Style="{StaticResource Card}" ClipToBounds="True">
+            <Border Grid.Row="2" Style="{StaticResource CardResults}" ClipToBounds="True">
                 <DataGrid ItemsSource="{Binding Rows}" SelectedItem="{Binding SelectedRow}"
                           AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single"
                           HeadersVisibility="Column" GridLinesVisibility="Horizontal"
@@ -300,6 +357,8 @@
                                             ElementStyle="{StaticResource StatusText}"/>
                         <DataGridTextColumn Header="SOURCE" Binding="{Binding Source}" Width="110"
                                             ElementStyle="{StaticResource TrimText}"/>
+                        <DataGridTextColumn Header="ROLE" Binding="{Binding Role}" Width="100"
+                                            ElementStyle="{StaticResource TrimText}"/>
                         <DataGridTextColumn Header="NAME" Binding="{Binding Name}" Width="2*" MinWidth="320"
                                             ElementStyle="{StaticResource TrimText}"/>
                         <DataGridTextColumn Header="HTTP" Binding="{Binding Http}" Width="65"/>
@@ -309,6 +368,23 @@
                                             ElementStyle="{StaticResource TrimText}"/>
                     </DataGrid.Columns>
                 </DataGrid>
+            </Border>
+
+            <!-- Role matrix (shown instead of the results grid) -->
+            <Border Grid.Row="2" Style="{StaticResource Card}" ClipToBounds="True"
+                    Visibility="{Binding ShowMatrix, Converter={StaticResource B2V}}">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="{Binding MatrixSummary}" TextWrapping="Wrap"
+                               Margin="14,10" FontSize="12" Foreground="{StaticResource Subtext}"/>
+                    <DataGrid x:Name="MatrixGrid" ItemsSource="{Binding MatrixView}"
+                              AutoGenerateColumns="True" AutoGeneratingColumn="MatrixGrid_AutoGeneratingColumn"
+                              IsReadOnly="True" SelectionMode="Single" HeadersVisibility="Column"
+                              GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="{StaticResource Surface0}"
+                              Background="Transparent" BorderThickness="0" CanUserAddRows="False"
+                              ColumnHeaderStyle="{StaticResource GridHeader}"
+                              CellStyle="{StaticResource MatrixCell}"
+                              RowStyle="{StaticResource MatrixRow}"/>
+                </DockPanel>
             </Border>
 
             <!-- Detail -->

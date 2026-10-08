@@ -9,8 +9,16 @@ public interface ISeederScanner
 
 public interface ISecretStore
 {
-    void Save(string projectPath, string email, string password);
-    AuthProfile? Load(string projectPath);
+    /// Adds the account, or replaces the saved one with the same email.
+    void Save(string projectPath, string email, string? role, string password);
+
+    /// Every account remembered for this project (empty list when none).
+    IReadOnlyList<AuthProfile> LoadAll(string projectPath);
+
+    /// Removes one remembered account.
+    void Delete(string projectPath, string email);
+
+    /// Removes every remembered account of the project.
     void Delete(string projectPath);
 }
 
